@@ -7,6 +7,8 @@ export type InterviewStatus =
   | "terminated"
   | "failed";
 
+export type ArtifactStatus = "not_started" | "generating" | "ready" | "failed";
+
 export type InterviewStage =
   | "jd_analysis"
   | "resume_match"
@@ -101,6 +103,8 @@ export interface InterviewSnapshot {
   };
   qa_history: QaHistoryItem[];
   ended_reason: string | null;
+  report_status: ArtifactStatus;
+  review_plan_status: ArtifactStatus;
   report_ready: boolean;
   review_plan_ready: boolean;
   last_event_id: string;
@@ -114,6 +118,7 @@ export interface ScoreEvent {
   feedback: string;
   key_points_hit?: string[];
   key_points_missed?: string[];
+  is_follow_up?: boolean;
 }
 
 export interface InterviewReport {
@@ -125,9 +130,12 @@ export interface InterviewReport {
   strengths: string[];
   weaknesses: string[];
   detailed_review: Array<{
-    topic?: string;
-    summary?: string;
-    score?: number;
+    question_content: string;
+    user_answer: string;
+    score: number;
+    comment: string;
+    key_points_hit: string[];
+    key_points_missed: string[];
   }>;
   summary: string;
   created_at: string;
@@ -140,17 +148,22 @@ export interface ReportResponse {
 
 export interface ReviewPlan {
   interview_id: string;
-  weak_areas: string[];
+  weak_areas: Array<{
+    topic: string;
+    score: number;
+    priority: "high" | "medium" | "low";
+  }>;
   study_plan: Array<{
-    day?: number;
-    title?: string;
-    topics?: string[];
-    outcome?: string;
+    topic: string;
+    objective: string;
+    actions: string[];
+    time_estimate: string;
   }>;
   resources: Array<{
-    title?: string;
+    title: string;
     url?: string;
-    type?: string;
+    type: "article" | "video" | "repo" | "book";
+    desc: string;
   }>;
   created_at: string;
 }
@@ -158,6 +171,12 @@ export interface ReviewPlan {
 export interface ReviewPlanResponse {
   plan_markdown: string;
   plan: ReviewPlan;
+}
+
+export interface RetryArtifactResponse {
+  accepted: true;
+  interview_id: string;
+  artifact: "report" | "review_plan";
 }
 
 export interface SseMessage<T = unknown> {

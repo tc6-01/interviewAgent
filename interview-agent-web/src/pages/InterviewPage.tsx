@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import { InterviewApiError } from "../api/errors";
+import { answerConflictMessage, InterviewApiError } from "../api/errors";
 import { navigate } from "../app/router";
 import { AppShell } from "../components/AppShell";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -38,6 +38,12 @@ export function InterviewPage({ interviewId }: { interviewId: string }) {
         await api.subscribe(interviewId, {
           lastEventId,
           signal: controller.signal,
+          onSnapshot: (snapshot) => {
+            dispatch({ type: "hydrate_session", snapshot });
+            if (snapshot.status === "completed") {
+              navigate(`/results/${encodeURIComponent(interviewId)}`);
+            }
+          },
           onConnectionChange: (connected) =>
             dispatch({ type: "patch_session", id: interviewId, patch: { connected } }),
           onMessage: (message) => {
@@ -85,8 +91,13 @@ export function InterviewPage({ interviewId }: { interviewId: string }) {
         try {
           const snapshot = await api.getInterview(interviewId);
           dispatch({ type: "hydrate_session", snapshot });
-          setAnswer("");
-          setPageError("回答已被服务端接收，页面已同步到最新进度，请勿重复提交。");
+          if (["answer_already_submitted", "prompt_mismatch", "interview_finished"].includes(error.code)) {
+            setAnswer("");
+          }
+          setPageError(answerConflictMessage(error.code));
+          if (snapshot.status === "completed") {
+            navigate(`/results/${encodeURIComponent(interviewId)}`);
+          }
         } catch {
           setPageError(error.message);
         }
@@ -113,6 +124,35 @@ export function InterviewPage({ interviewId }: { interviewId: string }) {
 
   if (!session) {
     return <AppShell compact><main className="center-state"><h1>没有找到这场面试</h1><p>{pageError ?? "演示会话刷新后不会保留，请重新开始。"}</p><a className="button button--primary" href="#/setup">返回首页</a></main></AppShell>;
+  }
+
+  const restart = () => {
+    dispatch({ type: "reset_setup" });
+    navigate("/setup");
+  };
+
+  if (session.status === "terminated") {
+    return (
+      <AppShell compact>
+        <main className="center-state">
+          <h1>面试已结束</h1>
+          <p>你还没有完成任何主问题，因此本次未生成评估报告。可以返回首页重新开始。</p>
+          <button className="button button--primary" type="button" onClick={restart}>重新开始面试</button>
+        </main>
+      </AppShell>
+    );
+  }
+
+  if (session.status === "failed") {
+    return (
+      <AppShell compact>
+        <main className="center-state">
+          <h1>这场面试已中断</h1>
+          <p>{session.error ?? "会话遇到不可恢复错误，请重新开始一场面试。"}</p>
+          <button className="button button--primary" type="button" onClick={restart}>返回首页重新开始</button>
+        </main>
+      </AppShell>
+    );
   }
 
   const waitingForAnswer = Boolean(session.awaitingAnswer);
@@ -158,7 +198,7 @@ export function InterviewPage({ interviewId }: { interviewId: string }) {
               <article className={`message message--${message.role}`} key={message.id}>
                 <div className="message-avatar">{message.role === "candidate" ? "你" : message.role === "feedback" ? "✓" : <SparkIcon />}</div>
                 <div className="message-body">
-                  <span className="message-label">{message.role === "candidate" ? "你的回答" : message.role === "feedback" ? `单题反馈 · ${message.score?.score ?? "—"} 分` : message.role === "system" ? "准备中" : `面试官${message.questionNo ? ` · 第 ${message.questionNo} 题` : ""}`}</span>
+                  <span className="message-label">{message.role === "candidate" ? "你的回答" : message.role === "feedback" ? `单题反馈 · ${message.score?.score ?? "—"} 分` : message.role === "system" ? "准备中" : `面试官${message.questionNo ? ` · 第 ${message.questionNo} 题${message.kind === "followup" ? "追问" : ""}` : ""}`}</span>
                   <p>{message.content}</p>
                   {message.score && (
                     <div className="feedback-points">

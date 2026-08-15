@@ -6,6 +6,7 @@ import type {
   ParsedDocument,
   Question,
   ReportResponse,
+  RetryArtifactResponse,
   ReviewPlanResponse,
   SseMessage,
 } from "../types/api";
@@ -24,11 +25,13 @@ interface MockSession {
   subscribers: Set<(message: SseMessage) => void>;
   report?: ReportResponse;
   reviewPlan?: ReviewPlanResponse;
+  reportFailuresRemaining: number;
   reviewPlanFailuresRemaining: number;
 }
 
 interface MockInterviewApiOptions {
   delayScale?: number;
+  failReportOnce?: boolean;
   failReviewPlanOnce?: boolean;
 }
 
@@ -62,10 +65,12 @@ export class MockInterviewApi implements InterviewApi {
   readonly mode = "mock" as const;
   private sessions = new Map<string, MockSession>();
   private readonly delayScale: number;
+  private readonly failReportOnce: boolean;
   private readonly failReviewPlanOnce: boolean;
 
   constructor(options: MockInterviewApiOptions = {}) {
     this.delayScale = options.delayScale ?? 1;
+    this.failReportOnce = options.failReportOnce ?? false;
     this.failReviewPlanOnce = options.failReviewPlanOnce ?? false;
   }
 
@@ -113,6 +118,7 @@ export class MockInterviewApi implements InterviewApi {
       questions: sampleQuestions.slice(0, total),
       events: [],
       subscribers: new Set(),
+      reportFailuresRemaining: this.failReportOnce ? 1 : 0,
       reviewPlanFailuresRemaining: this.failReviewPlanOnce ? 1 : 0,
       snapshot: {
         interview_id: id,
@@ -123,6 +129,8 @@ export class MockInterviewApi implements InterviewApi {
         progress: { answered: 0, total },
         qa_history: [],
         ended_reason: null,
+        report_status: "not_started",
+        review_plan_status: "not_started",
         report_ready: false,
         review_plan_ready: false,
         last_event_id: "0",
@@ -147,11 +155,19 @@ export class MockInterviewApi implements InterviewApi {
   async submitAnswer(id: string, promptId: string, text: string): Promise<void> {
     const session = this.requireSession(id);
     const awaiting = session.snapshot.awaiting_answer;
+    if (["completed", "terminated", "failed"].includes(session.snapshot.status)) {
+      throw new InterviewApiError("本场面试已经结束。", "interview_finished", 409);
+    }
     if (session.snapshot.qa_history.some((item) => item.prompt_id === promptId)) {
       throw new InterviewApiError("这道题的回答已经提交，已为你同步最新进度。", "answer_already_submitted", 409);
     }
-    if (!awaiting || awaiting.prompt_id !== promptId) {
-      throw new InterviewApiError("当前问题已变化，请同步最新进度后重试。", "prompt_mismatch", 409);
+    if (!awaiting) {
+      throw new InterviewApiError("面试官正在处理上一轮回答。", "interview_not_awaiting_answer", 409);
+    }
+    if (awaiting.prompt_id !== promptId) {
+      throw new InterviewApiError("当前问题已变化，请同步最新进度后重试。", "prompt_mismatch", 409, {
+        current_prompt_id: awaiting.prompt_id,
+      });
     }
     if (!text.trim()) throw new Error("回答不能为空");
 
@@ -163,7 +179,7 @@ export class MockInterviewApi implements InterviewApi {
       question: session.snapshot.current_question?.content ?? "",
       answer: text.trim(),
     });
-    session.snapshot.progress.answered += 1;
+    if (awaiting.kind === "primary") session.snapshot.progress.answered += 1;
     session.snapshot.updated_at = new Date().toISOString();
     void this.evaluateAnswerAndContinue(session, promptId, text.trim());
     await this.wait(100);
@@ -176,7 +192,8 @@ export class MockInterviewApi implements InterviewApi {
   ): Promise<void> {
     await this.wait(500);
 
-    const score = Math.min(92, 68 + answer.length / 8);
+    const isFollowUp = promptId.endsWith("_followup");
+    const score = Math.min(92, 38 + answer.length / 2);
     const scoreEvent: InterviewEventMap["score"] = {
       prompt_id: promptId,
       score: Math.round(score),
@@ -186,6 +203,7 @@ export class MockInterviewApi implements InterviewApi {
           : "核心思路正确。建议使用“背景—行动—结果”的结构，并补充关键指标与取舍依据。",
       key_points_hit: ["思路完整", "场景意识"],
       key_points_missed: ["量化结果", "边界条件"],
+      is_follow_up: isFollowUp,
     };
     const historyItem = session.snapshot.qa_history.at(-1);
     if (historyItem) {
@@ -193,6 +211,19 @@ export class MockInterviewApi implements InterviewApi {
       historyItem.feedback = scoreEvent.feedback;
     }
     this.emit(session, "score", scoreEvent);
+
+    if (!isFollowUp && scoreEvent.score < 80 && scoreEvent.score >= 30) {
+      const primary = session.questions[session.currentIndex];
+      await this.streamQuestion(session, {
+        prompt_id: `prompt_${primary.question_no}_followup`,
+        question_no: primary.question_no,
+        kind: "followup",
+        content: "追问：请补充一个具体指标，并说明方案失效时你会如何回滚或降级。",
+        source: primary.source,
+      });
+      return;
+    }
+
     session.currentIndex += 1;
 
     if (session.currentIndex < session.questions.length) {
@@ -217,7 +248,9 @@ export class MockInterviewApi implements InterviewApi {
 
   async getReport(id: string): Promise<ReportResponse> {
     const session = this.requireSession(id);
-    if (!session.report) throw new Error("评估报告仍在生成中");
+    if (!session.report) {
+      throw new InterviewApiError("评估报告尚未就绪。", "report_not_ready", 409);
+    }
     return structuredClone(session.report);
   }
 
@@ -229,21 +262,38 @@ export class MockInterviewApi implements InterviewApi {
     return structuredClone(session.reviewPlan);
   }
 
-  async retryReviewPlan(id: string): Promise<ReviewPlanResponse> {
+  async retryReport(id: string): Promise<RetryArtifactResponse> {
     const session = this.requireSession(id);
-    if (session.reviewPlan) return structuredClone(session.reviewPlan);
-    await this.wait(350);
-    const reviewPlan = this.createReviewPlan(session);
-    session.reviewPlan = reviewPlan;
-    session.snapshot.review_plan_ready = true;
-    session.snapshot.status = "completed";
-    session.snapshot.stage = "review_plan";
-    this.emit(session, "review_plan", reviewPlan);
-    return structuredClone(reviewPlan);
+    if (session.snapshot.report_status !== "failed") {
+      const code = session.snapshot.report_status === "generating"
+        ? "report_retry_in_progress"
+        : "report_retry_not_allowed";
+      throw new InterviewApiError("当前状态不能重试评估报告。", code, 409);
+    }
+    session.snapshot.report_status = "generating";
+    void this.generateArtifacts(session, false, true);
+    return { accepted: true, interview_id: id, artifact: "report" };
+  }
+
+  async retryReviewPlan(id: string): Promise<RetryArtifactResponse> {
+    const session = this.requireSession(id);
+    if (session.snapshot.review_plan_status !== "failed") {
+      const code = session.snapshot.review_plan_status === "generating"
+        ? "review_plan_retry_in_progress"
+        : "review_plan_retry_not_allowed";
+      throw new InterviewApiError("当前状态不能重试复习计划。", code, 409);
+    }
+    if (session.snapshot.report_status !== "ready") {
+      throw new InterviewApiError("评估报告尚未就绪。", "review_plan_prerequisites_not_ready", 409);
+    }
+    session.snapshot.review_plan_status = "generating";
+    void this.generateReviewPlan(session, false, true);
+    return { accepted: true, interview_id: id, artifact: "review_plan" };
   }
 
   async subscribe(id: string, options: SubscribeOptions): Promise<void> {
     const session = this.requireSession(id);
+    options.onSnapshot?.(structuredClone(session.snapshot));
     const last = Number(options.lastEventId ?? 0);
     session.events
       .filter((event) => Number(event.id ?? 0) > last)
@@ -327,7 +377,7 @@ export class MockInterviewApi implements InterviewApi {
     }
     this.emit(session, "question_plan", {
       total_questions: session.questions.length,
-      distribution: { project: 5, debugging: 5, system_design: 5 },
+      distribution: { basic: 8, experience: 5, design: 2 },
     });
     await this.streamQuestion(session, session.questions[0]);
   }
@@ -356,10 +406,31 @@ export class MockInterviewApi implements InterviewApi {
     session.snapshot.awaiting_answer = null;
     session.snapshot.status = "evaluating";
     session.snapshot.stage = "evaluation";
+    session.snapshot.report_status = "generating";
     this.emit(session, "stage", { stage: "evaluation", message: "正在综合你的回答生成评估" });
+    await this.generateArtifacts(session, true);
+  }
+
+  private async generateArtifacts(
+    session: MockSession,
+    allowFailure: boolean,
+    preserveInterviewStatus = false,
+  ): Promise<void> {
     await this.wait(800);
 
     const id = session.snapshot.interview_id;
+    if (allowFailure && session.reportFailuresRemaining > 0) {
+      session.reportFailuresRemaining -= 1;
+      session.snapshot.report_status = "failed";
+      session.snapshot.status = "completed";
+      this.emit(session, "warning", {
+        code: "report_generation_failed",
+        message: "逐题评分已保留，但评估报告生成失败，可在结果页单独重试。",
+      });
+      this.emit(session, "completed", { interview_id: id });
+      return;
+    }
+
     const createdAt = new Date().toISOString();
     const report: ReportResponse = {
       report_markdown: "# 面试评估报告\n\n你展现了扎实的工程经验与问题拆解能力。下一步重点提升量化表达和系统边界分析。",
@@ -371,32 +442,40 @@ export class MockInterviewApi implements InterviewApi {
         dimension_scores: { 技术深度: 84, 问题分析: 88, 系统设计: 78, 表达沟通: 79 },
         strengths: ["能够从真实场景出发拆解问题", "排查路径有层次，具备工程判断力", "技术选型能说明基本取舍"],
         weaknesses: ["结果缺少量化数据支撑", "故障恢复与边界条件覆盖不足"],
-        detailed_review: [
-          {
-            topic: "结果缺少量化数据支撑",
-            summary: "引用第 1、8、14 题：行动描述完整，但结果指标和失败前后对比仍可更具体。",
-            score: 76,
-          },
-          {
-            topic: "故障恢复与边界条件覆盖不足",
-            summary: "引用第 3、5、9 题：主流程设计清楚，仍需补充降级触发条件、数据修复和回滚验证。",
-            score: 74,
-          },
-        ],
+        detailed_review: session.snapshot.qa_history.map((item) => ({
+          question_content: item.question,
+          user_answer: item.answer,
+          score: item.score ?? 0,
+          comment: item.feedback ?? "本题已完成评分，建议继续补充具体数据与边界条件。",
+          key_points_hit: ["问题拆解", "场景意识"],
+          key_points_missed: ["量化结果", "异常边界"],
+        })),
         summary: "技术基础与工程实践达到高级研发岗位预期，建议强化架构题中的约束澄清、容量估算与容灾设计。",
         created_at: createdAt,
       },
     };
     session.report = report;
+    session.snapshot.report_status = "ready";
     session.snapshot.report_ready = true;
     this.emit(session, "report", report);
 
-    session.snapshot.status = "planning_review";
+    await this.generateReviewPlan(session, true, preserveInterviewStatus);
+  }
+
+  private async generateReviewPlan(
+    session: MockSession,
+    allowFailure: boolean,
+    preserveInterviewStatus = false,
+  ): Promise<void> {
+    const id = session.snapshot.interview_id;
+    if (!preserveInterviewStatus) session.snapshot.status = "planning_review";
     session.snapshot.stage = "review_plan";
+    session.snapshot.review_plan_status = "generating";
     this.emit(session, "stage", { stage: "review_plan", message: "正在整理针对性的复习计划" });
     await this.wait(650);
-    if (session.reviewPlanFailuresRemaining > 0) {
+    if (allowFailure && session.reviewPlanFailuresRemaining > 0) {
       session.reviewPlanFailuresRemaining -= 1;
+      session.snapshot.review_plan_status = "failed";
       session.snapshot.status = "completed";
       session.snapshot.ended_reason = null;
       this.emit(session, "warning", {
@@ -409,6 +488,7 @@ export class MockInterviewApi implements InterviewApi {
 
     const reviewPlan = this.createReviewPlan(session);
     session.reviewPlan = reviewPlan;
+    session.snapshot.review_plan_status = "ready";
     session.snapshot.review_plan_ready = true;
     this.emit(session, "review_plan", reviewPlan);
     session.snapshot.status = "completed";
@@ -422,17 +502,35 @@ export class MockInterviewApi implements InterviewApi {
       plan_markdown: "# 7 天复习计划\n\n围绕量化表达、性能诊断和高可用设计完成三轮训练。",
       plan: {
         interview_id: session.snapshot.interview_id,
-        weak_areas: ["量化表达", "容量估算", "故障恢复"],
+        weak_areas: [
+          { topic: "量化表达", score: 58, priority: "high" },
+          { topic: "故障恢复", score: 66, priority: "high" },
+          { topic: "容量估算", score: 72, priority: "medium" },
+        ],
         study_plan: [
-          { day: 1, title: "重写项目案例", topics: ["STAR", "技术指标"], outcome: "完成 2 个可量化项目故事" },
-          { day: 2, title: "性能诊断", topics: ["RED 指标", "Tracing", "P99"], outcome: "输出一份排障决策树" },
-          { day: 3, title: "系统边界", topics: ["领域拆分", "数据一致性"], outcome: "完成一次 30 分钟架构演练" },
-          { day: 5, title: "高可用设计", topics: ["限流", "降级", "容灾"], outcome: "补齐故障场景清单" },
-          { day: 7, title: "模拟复盘", topics: ["限时表达", "追问"], outcome: "完成一轮二次模拟面试" },
+          {
+            topic: "量化表达",
+            objective: "把项目成果转化为可验证的数据结论",
+            actions: ["用 STAR 重写两个项目案例", "为每个案例补齐基线、结果与验证口径"],
+            time_estimate: "2 小时",
+          },
+          {
+            topic: "故障恢复",
+            objective: "能完整说明降级、回滚与数据修复路径",
+            actions: ["整理一次线上故障时间线", "画出限流、熔断、回滚和补偿决策树"],
+            time_estimate: "3 小时",
+          },
+          {
+            topic: "容量估算",
+            objective: "在系统设计题中快速建立容量与成本模型",
+            actions: ["完成一组 QPS/存储估算练习", "用 30 分钟复述一次扩容与迁移方案"],
+            time_estimate: "2.5 小时",
+          },
         ],
         resources: [
-          { title: "Google SRE Workbook", type: "book", url: "https://sre.google/workbook/table-of-contents/" },
-          { title: "System Design Primer", type: "repository", url: "https://github.com/donnemartin/system-design-primer" },
+          { title: "Google SRE Workbook", type: "book", url: "https://sre.google/workbook/table-of-contents/", desc: "从告警、应急响应到可靠性实践的官方资料。" },
+          { title: "System Design Primer", type: "repo", url: "https://github.com/donnemartin/system-design-primer", desc: "系统设计基础、容量估算与常见架构模式练习。" },
+          { title: "Google Cloud Architecture Framework", type: "article", url: "https://cloud.google.com/architecture/framework", desc: "用于补充高可用、运维与性能设计检查项。" },
         ],
         created_at: createdAt,
       },

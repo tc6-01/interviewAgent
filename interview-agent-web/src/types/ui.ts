@@ -1,4 +1,5 @@
 import type {
+  ArtifactStatus,
   AwaitingAnswer,
   InterviewReport,
   InterviewStage,
@@ -43,6 +44,8 @@ export interface InterviewSessionState {
   reviewPlan: ReviewPlan | null;
   reportMarkdown: string;
   planMarkdown: string;
+  reportStatus: ArtifactStatus;
+  reviewPlanStatus: ArtifactStatus;
   warning: string | null;
   error: string | null;
   connected: boolean;

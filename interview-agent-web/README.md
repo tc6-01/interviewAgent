@@ -27,7 +27,7 @@ cp .env.example .env
 npm run dev
 ```
 
-连接符合 INT-4 v2.1 契约的真实后端：
+连接符合 INT-4 HTTP/SSE API v2.2 契约的真实后端：
 
 ```bash
 VITE_API_MODE=real npm run dev
@@ -63,14 +63,15 @@ src/
 ├── lib/          面试方向预览等纯函数
 ├── pages/        资料、面试、结果页面
 ├── store/        会话状态、SSE 事件归并和本地恢复
-└── types/        API v2.1 与 UI 类型
+└── types/        API v2.2 与 UI 类型
 ```
 
 ## SSE 恢复策略
 
 - 使用 `fetch` + `ReadableStream`，允许设置 `Authorization` 和 `Last-Event-ID`。
-- 页面恢复时先请求 `GET /interviews/{id}`，再从快照的 `last_event_id` 订阅事件。
+- 首次连接和每次自动重连都先请求 `GET /interviews/{id}`；若快照仍为活跃态，再从快照的 `last_event_id` 订阅事件。
 - `question_delta` 只用于即时渲染；完整 `question` 事件是最终权威文本。
 - 未识别的事件和字段会被忽略，避免服务端扩展破坏旧前端。
-- 回答接口返回 `409` 时先恢复最新快照，明确提示回答已提交，避免重复写入。
-- 复习计划失败时调用 `POST /interviews/{id}/review-plan/retry`，不会重跑面试或评估。
+- 回答接口返回 `409` 时先恢复最新快照，并区分 `answer_already_submitted`、`prompt_mismatch`、`interview_not_awaiting_answer`、`interview_finished`。
+- 快照用 `report_status` / `review_plan_status` 区分 `not_started`、`generating`、`ready`、`failed`。
+- 报告或复习计划失败时分别调用对应 retry 端点；命令返回 202 accepted，随后通过快照轮询与结果 GET 获取最终产物，不会重跑已完成的面试步骤。

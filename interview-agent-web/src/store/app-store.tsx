@@ -104,6 +104,8 @@ function createSession(
     reviewPlan: null,
     reportMarkdown: "",
     planMarkdown: "",
+    reportStatus: "not_started",
+    reviewPlanStatus: "not_started",
     warning: null,
     error: null,
     connected: false,
@@ -185,6 +187,8 @@ export function hydrateSession(snapshot: InterviewSnapshot, existing?: Interview
     reviewPlan: existing?.reviewPlan ?? null,
     reportMarkdown: existing?.reportMarkdown ?? "",
     planMarkdown: existing?.planMarkdown ?? "",
+    reportStatus: snapshot.report_status,
+    reviewPlanStatus: snapshot.review_plan_status,
     warning: null,
     error: snapshot.status === "failed" ? `面试已中断：${snapshot.ended_reason ?? "未知原因"}` : null,
     connected: false,
@@ -274,9 +278,20 @@ export function applyEvent(session: InterviewSessionState, message: SseMessage):
       };
     case "score": {
       const promptId = String(data.prompt_id);
+      const scoredQuestion = session.messages.find(
+        (item) => item.role === "interviewer" && item.promptId === promptId,
+      );
+      const alreadyScored = session.messages.some((item) => item.id === `score-${promptId}`);
+      const isFollowUp = Boolean(data.is_follow_up) || scoredQuestion?.kind === "followup";
+      const primaryQuestionNo = scoredQuestion?.questionNo ?? session.currentQuestion?.question_no;
       return {
         ...next,
-        answered: Math.max(session.answered, session.messages.filter((item) => item.role === "candidate").length),
+        answered: isFollowUp || alreadyScored
+          ? session.answered
+          : Math.min(
+              session.total,
+              Math.max(session.answered + 1, primaryQuestionNo ?? session.answered + 1),
+            ),
         messages: appendUnique(session.messages, {
           id: `score-${promptId}`,
           role: "feedback",
@@ -301,6 +316,7 @@ export function applyEvent(session: InterviewSessionState, message: SseMessage):
         ...next,
         report: payload.report ?? null,
         reportMarkdown: payload.report_markdown ?? "",
+        reportStatus: "ready",
       };
     }
     case "review_plan": {
@@ -312,10 +328,19 @@ export function applyEvent(session: InterviewSessionState, message: SseMessage):
         ...next,
         reviewPlan: payload.plan ?? null,
         planMarkdown: payload.plan_markdown ?? "",
+        reviewPlanStatus: "ready",
       };
     }
-    case "warning":
-      return { ...next, warning: String(data.message ?? "部分能力暂时降级") };
+    case "warning": {
+      const code = String(data.code ?? "");
+      return {
+        ...next,
+        warning: String(data.message ?? "部分能力暂时降级"),
+        reportStatus: code === "report_generation_failed" ? "failed" : session.reportStatus,
+        reviewPlanStatus:
+          code === "review_plan_generation_failed" ? "failed" : session.reviewPlanStatus,
+      };
+    }
     case "completed":
       return { ...next, status: "completed", awaitingAnswer: null, connected: false };
     case "terminated":

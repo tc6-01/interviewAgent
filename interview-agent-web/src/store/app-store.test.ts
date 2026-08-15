@@ -28,6 +28,8 @@ describe("snapshot recovery", () => {
         },
       ],
       ended_reason: null,
+      report_status: "not_started",
+      review_plan_status: "not_started",
       report_ready: false,
       review_plan_ready: false,
       last_event_id: "18",
@@ -57,5 +59,53 @@ describe("snapshot recovery", () => {
     expect(failed.awaitingAnswer).toBeNull();
     expect(failed.error).toBe("模型服务暂时不可用");
     expect(failed.lastEventId).toBe("19");
+  });
+
+  it("counts only scored primary questions and lets authoritative question replace deltas", () => {
+    const base = hydrateSession({
+      interview_id: "interview_2",
+      status: "interviewing",
+      stage: "interview",
+      awaiting_answer: null,
+      current_question: null,
+      progress: { answered: 1, total: 15 },
+      qa_history: [],
+      ended_reason: null,
+      report_status: "not_started",
+      review_plan_status: "not_started",
+      report_ready: false,
+      review_plan_ready: false,
+      last_event_id: "20",
+      created_at: "2026-08-15T00:00:00.000Z",
+      updated_at: "2026-08-15T00:05:00.000Z",
+    });
+    const withDelta = applyEvent(base, {
+      event: "question_delta",
+      data: { prompt_id: "prompt_1_followup", delta: "不完整" },
+    });
+    const withQuestion = applyEvent(withDelta, {
+      id: "21",
+      event: "question",
+      data: {
+        prompt_id: "prompt_1_followup",
+        question_no: 1,
+        kind: "followup",
+        content: "这是服务端给出的完整追问。",
+      },
+    });
+    const scoredFollowUp = applyEvent(withQuestion, {
+      id: "22",
+      event: "score",
+      data: {
+        prompt_id: "prompt_1_followup",
+        score: 75,
+        feedback: "补充完成",
+        is_follow_up: true,
+      },
+    });
+
+    expect(withQuestion.streamingQuestion).toBe("");
+    expect(withQuestion.messages.at(-1)?.content).toBe("这是服务端给出的完整追问。");
+    expect(scoredFollowUp.answered).toBe(1);
   });
 });

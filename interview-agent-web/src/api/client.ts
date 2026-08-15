@@ -4,6 +4,7 @@ import type {
   InterviewSnapshot,
   ParsedDocument,
   ReportResponse,
+  RetryArtifactResponse,
   ReviewPlanResponse,
   SseMessage,
 } from "../types/api";
@@ -26,6 +27,7 @@ export interface SubscribeOptions {
   lastEventId?: string;
   signal?: AbortSignal;
   onMessage: (message: SseMessage) => void;
+  onSnapshot?: (snapshot: InterviewSnapshot) => void;
   onConnectionChange?: (connected: boolean) => void;
 }
 
@@ -38,7 +40,8 @@ export interface InterviewApi {
   quitInterview(id: string): Promise<void>;
   getReport(id: string): Promise<ReportResponse>;
   getReviewPlan(id: string): Promise<ReviewPlanResponse>;
-  retryReviewPlan(id: string): Promise<ReviewPlanResponse>;
+  retryReport(id: string): Promise<RetryArtifactResponse>;
+  retryReviewPlan(id: string): Promise<RetryArtifactResponse>;
   subscribe(id: string, options: SubscribeOptions): Promise<void>;
 }
 
@@ -124,23 +127,33 @@ export class HttpInterviewApi implements InterviewApi {
     return request<ReviewPlanResponse>(`/interviews/${encodeURIComponent(id)}/review-plan`);
   }
 
-  retryReviewPlan(id: string): Promise<ReviewPlanResponse> {
-    return request<ReviewPlanResponse>(`/interviews/${encodeURIComponent(id)}/review-plan/retry`, {
+  retryReport(id: string): Promise<RetryArtifactResponse> {
+    return request<RetryArtifactResponse>(`/interviews/${encodeURIComponent(id)}/report/retry`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  retryReviewPlan(id: string): Promise<RetryArtifactResponse> {
+    return request<RetryArtifactResponse>(`/interviews/${encodeURIComponent(id)}/review-plan/retry`, {
       method: "POST",
       body: JSON.stringify({}),
     });
   }
 
   async subscribe(id: string, options: SubscribeOptions): Promise<void> {
-    let lastEventId = options.lastEventId;
     let retryCount = 0;
     const token = window.localStorage.getItem("interview-agent-token");
 
     while (!options.signal?.aborted) {
       try {
+        const snapshot = await this.getInterview(id);
+        options.onSnapshot?.(snapshot);
+        if (["completed", "terminated", "failed"].includes(snapshot.status)) return;
+
         const headers = new Headers({ Accept: "text/event-stream" });
         if (token) headers.set("Authorization", `Bearer ${token}`);
-        if (lastEventId) headers.set("Last-Event-ID", lastEventId);
+        if (snapshot.last_event_id) headers.set("Last-Event-ID", snapshot.last_event_id);
         const response = await fetch(`${API_ROOT}/interviews/${encodeURIComponent(id)}/events`, {
           headers,
           credentials: "include",
@@ -156,7 +169,6 @@ export class HttpInterviewApi implements InterviewApi {
         await consumeSseStream(
           response.body,
           (message) => {
-            if (message.id) lastEventId = message.id;
             if (TERMINAL_EVENTS.has(message.event)) terminal = true;
             options.onMessage(message);
           },
