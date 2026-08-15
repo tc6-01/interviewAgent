@@ -19,9 +19,10 @@ import (
 // App is the composition root. Concrete adapters are only wired here; inner
 // layers depend on domain interfaces.
 type App struct {
-	handler http.Handler
-	store   *sqlite.Store
-	index   *bm25.Index
+	handler  http.Handler
+	store    *sqlite.Store
+	index    *bm25.Index
+	sessions *session.Manager
 }
 
 func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*App, error) {
@@ -50,12 +51,12 @@ func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*A
 	if err != nil {
 		return fail(err)
 	}
-	sessions, err := session.NewManager(graphRuntime)
+	sessions, err := session.NewManager(graphRuntime, store, session.WithLogger(logger))
 	if err != nil {
 		return fail(err)
 	}
 	server := httpapi.New(cfg, sessions, logger)
-	return &App{handler: server.Handler(), store: store, index: index}, nil
+	return &App{handler: server.Handler(), store: store, index: index, sessions: sessions}, nil
 }
 
 func (a *App) Handler() http.Handler {
@@ -65,6 +66,11 @@ func (a *App) Handler() http.Handler {
 func (a *App) Close() error {
 	if a == nil {
 		return nil
+	}
+	if a.sessions != nil {
+		if err := a.sessions.Close(); err != nil {
+			return fmt.Errorf("bootstrap: close sessions: %w", err)
+		}
 	}
 	if a.index != nil {
 		a.index.Close()
