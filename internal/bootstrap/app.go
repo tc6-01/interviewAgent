@@ -12,6 +12,7 @@ import (
 	coreagent "interview-agent/internal/core/agent"
 	coregraph "interview-agent/internal/core/graph"
 	"interview-agent/internal/httpapi"
+	"interview-agent/internal/questionbank"
 	"interview-agent/internal/runtimeconfig"
 	"interview-agent/internal/session"
 )
@@ -38,6 +39,13 @@ func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*A
 	}
 
 	index := bm25.New()
+	catalog, err := questionbank.NewCatalog(store, index, nil)
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := catalog.LoadAll(ctx); err != nil {
+		return fail(err)
+	}
 	llm, err := llmadapter.New(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout, cfg.LLMConcurrency)
 	if err != nil {
 		return fail(err)
