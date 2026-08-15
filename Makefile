@@ -15,7 +15,7 @@ test:
 vet:
 	go vet ./...
 
-check:
+check: questionbank-validate
 	go build ./...
 	go vet ./...
 	go test ./...
@@ -24,7 +24,7 @@ questionbank-generate:
 	go run ./cmd/questionbank-gen
 
 questionbank-validate:
-	go test ./internal/questionbank -run TestBuiltinAssetSchemaNoiseAndIdempotentStartup
+	go test ./internal/questionbank -run '^TestBuiltinAsset'
 
 # Legacy CLI requires its historical Redis/MySQL/Milvus configuration.
 legacy-run:

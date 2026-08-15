@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"interview-agent/internal/adapters/bm25"
 	"interview-agent/internal/adapters/sqlite"
@@ -75,6 +77,38 @@ func TestBuiltinAssetSchemaNoiseAndIdempotentStartup(t *testing.T) {
 	}
 }
 
+func TestBuiltinAssetJSONSchemaRejectsInvalidDocuments(t *testing.T) {
+	content, err := os.ReadFile("assets/go_v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "unknown top-level property", mutate: func(document map[string]any) { document["unexpected"] = true }},
+		{name: "unsupported schema version", mutate: func(document map[string]any) { document["schema_version"] = "2" }},
+		{name: "invalid question type", mutate: func(document map[string]any) {
+			document["questions"].([]any)[0].(map[string]any)["type"] = "trivia"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var document map[string]any
+			if err := json.Unmarshal(content, &document); err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(document)
+			invalid, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := validateBuiltinAssetSchema(invalid); err == nil {
+				t.Fatal("schema validation accepted an invalid builtin document")
+			}
+		})
+	}
+}
+
 func TestUserBankUploadReplaceDeleteAndScopeRebuild(t *testing.T) {
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "interview.db"))
@@ -132,6 +166,62 @@ func TestUserBankUploadReplaceDeleteAndScopeRebuild(t *testing.T) {
 	}
 	if index.ScopeSize("user:subject-a") != 0 {
 		t.Fatalf("deleted scope size = %d", index.ScopeSize("user:subject-a"))
+	}
+}
+
+func TestConcurrentReplaceAndDeleteCannotPublishStaleScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "interview.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	seedCatalog, err := NewCatalog(store, bm25.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := []byte(`{"questions":[{"id":"old","type":"basic","topic":"支付","text":"旧支付题","source":"private"}]}`)
+	if _, err := seedCatalog.ReplaceUserBank(ctx, "subject-a", "private.json", seed); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking := &captureListRepository{
+		Repository:  store,
+		targetScope: "user:subject-a",
+		captured:    make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	index := bm25.New()
+	catalog, err := NewCatalog(blocking, index, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte(`{"questions":[{"id":"new","type":"design","topic":"库存","text":"新库存题","source":"private"}]}`)
+	replaceDone := make(chan error, 1)
+	go func() {
+		_, err := catalog.ReplaceUserBank(ctx, "subject-a", "private.json", replacement)
+		replaceDone <- err
+	}()
+	<-blocking.captured
+
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- catalog.DeleteUserBank(ctx, "subject-a", "private.json") }()
+	select {
+	case err := <-deleteDone:
+		close(blocking.release)
+		<-replaceDone
+		t.Fatalf("delete completed before the in-flight replacement published its snapshot: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(blocking.release)
+	if err := <-replaceDone; err != nil {
+		t.Fatalf("ReplaceUserBank: %v", err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("DeleteUserBank: %v", err)
+	}
+	if size := index.ScopeSize("user:subject-a"); size != 0 {
+		t.Fatalf("stale user scope was published after delete: size=%d", size)
 	}
 }
 
@@ -253,6 +343,31 @@ func TestBuiltinRetrievalQualitySamples(t *testing.T) {
 
 type fallbackStub struct {
 	calls int
+}
+
+type captureListRepository struct {
+	domain.Repository
+	targetScope string
+	captured    chan struct{}
+	release     chan struct{}
+	mu          sync.Mutex
+	didCapture  bool
+}
+
+func (r *captureListRepository) ListQuestions(ctx context.Context, scope string) ([]domain.Question, error) {
+	questions, err := r.Repository.ListQuestions(ctx, scope)
+	if err != nil || scope != r.targetScope {
+		return questions, err
+	}
+	r.mu.Lock()
+	shouldCapture := !r.didCapture
+	r.didCapture = true
+	r.mu.Unlock()
+	if shouldCapture {
+		close(r.captured)
+		<-r.release
+	}
+	return questions, nil
 }
 
 func (f *fallbackStub) GenerateQuestions(_ context.Context, _ string, missing map[domain.QuestionType]int) ([]domain.Question, error) {

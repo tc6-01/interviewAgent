@@ -109,7 +109,7 @@ type Repository interface {
 	ListQuestionScopes(context.Context, string) ([]string, error)
 
 	CreateInterview(context.Context, Interview) error
-	SaveInterviewResult(context.Context, InterviewResult) error
+	SaveInterviewResult(context.Context, string, InterviewResult) error
 	GetInterview(context.Context, string, string) (Interview, InterviewResult, error)
 }
 

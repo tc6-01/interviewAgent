@@ -312,15 +312,26 @@ func (s *Store) CreateInterview(ctx context.Context, interview domain.Interview)
 	return nil
 }
 
-func (s *Store) SaveInterviewResult(ctx context.Context, result domain.InterviewResult) error {
+func (s *Store) SaveInterviewResult(ctx context.Context, subjectID string, result domain.InterviewResult) error {
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" || strings.TrimSpace(result.InterviewID) == "" {
+		return fmt.Errorf("sqlite: subject id and interview id are required")
+	}
 	if !validJSON(result.ReportJSON) || !validJSON(result.ReviewPlanJSON) {
 		return fmt.Errorf("sqlite: interview result must be JSON")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO interview_results(interview_id, report_json, review_plan_json) VALUES (?, ?, ?)
-		ON CONFLICT(interview_id) DO UPDATE SET report_json=excluded.report_json, review_plan_json=excluded.review_plan_json, updated_at=CURRENT_TIMESTAMP`,
-		result.InterviewID, result.ReportJSON, result.ReviewPlanJSON)
+	writeResult, err := s.db.ExecContext(ctx, `INSERT INTO interview_results(interview_id, subject_id, report_json, review_plan_json)
+		SELECT id, subject_id, ?, ? FROM interviews WHERE id = ? AND subject_id = ?
+		ON CONFLICT(interview_id) DO UPDATE SET subject_id=excluded.subject_id, report_json=excluded.report_json,
+			review_plan_json=excluded.review_plan_json, updated_at=CURRENT_TIMESTAMP`,
+		result.ReportJSON, result.ReviewPlanJSON, result.InterviewID, subjectID)
 	if err != nil {
 		return fmt.Errorf("sqlite: save interview result: %w", err)
+	}
+	if affected, err := writeResult.RowsAffected(); err != nil {
+		return fmt.Errorf("sqlite: interview result rows affected: %w", err)
+	} else if affected == 0 {
+		return fmt.Errorf("sqlite: interview not found for subject: %w", sql.ErrNoRows)
 	}
 	return nil
 }
@@ -338,7 +349,8 @@ func (s *Store) GetInterview(ctx context.Context, subjectID, interviewID string)
 	interview.UpdatedAt = parseTime(updatedAt)
 
 	var result domain.InterviewResult
-	err = s.db.QueryRowContext(ctx, `SELECT interview_id, report_json, review_plan_json, created_at, updated_at FROM interview_results WHERE interview_id=?`, interviewID).
+	err = s.db.QueryRowContext(ctx, `SELECT interview_id, report_json, review_plan_json, created_at, updated_at
+		FROM interview_results WHERE interview_id=? AND subject_id=?`, interviewID, subjectID).
 		Scan(&result.InterviewID, &result.ReportJSON, &result.ReviewPlanJSON, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return interview, result, nil

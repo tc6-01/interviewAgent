@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"interview-agent/internal/domain"
 )
@@ -17,6 +18,7 @@ type Catalog struct {
 	repository domain.Repository
 	index      domain.QuestionIndex
 	fallback   domain.QuestionFallback
+	scopeLocks sync.Map
 }
 
 func NewCatalog(repository domain.Repository, index domain.QuestionIndex, fallback domain.QuestionFallback) (*Catalog, error) {
@@ -31,6 +33,10 @@ func (c *Catalog) LoadBuiltin(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	lock := c.scopeLock("builtin")
+	lock.Lock()
+	defer lock.Unlock()
+
 	changed, err := c.repository.EnsureBuiltinBank(ctx, domain.QuestionBank{
 		ID:       "builtin-go",
 		Filename: "go_v1.json",
@@ -62,13 +68,18 @@ func (c *Catalog) LoadAll(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	for _, scope := range scopes {
+		lock := c.scopeLock(scope)
+		lock.Lock()
 		questions, err := c.repository.ListQuestions(ctx, scope)
 		if err != nil {
+			lock.Unlock()
 			return false, err
 		}
 		if err := c.index.ReplaceScope(scope, questions); err != nil {
+			lock.Unlock()
 			return false, err
 		}
+		lock.Unlock()
 	}
 	return changed, nil
 }
@@ -77,7 +88,9 @@ func (c *Catalog) LoadAll(ctx context.Context) (bool, error) {
 // filename + content hash makes retries idempotent; changed content replaces
 // the prior bank for that subject and filename.
 func (c *Catalog) ReplaceUserBank(ctx context.Context, subjectID, filename string, content []byte) (bool, error) {
-	if strings.TrimSpace(subjectID) == "" || strings.TrimSpace(filename) == "" {
+	subjectID = strings.TrimSpace(subjectID)
+	filename = filepath.Base(strings.TrimSpace(filename))
+	if subjectID == "" || filename == "" || filename == "." {
 		return false, fmt.Errorf("questionbank: subject and filename are required")
 	}
 	questions, err := parseUserQuestions(content, filename)
@@ -86,15 +99,18 @@ func (c *Catalog) ReplaceUserBank(ctx context.Context, subjectID, filename strin
 	}
 	hash := sha256.Sum256(content)
 	hashText := hex.EncodeToString(hash[:])
-	bankIDHash := sha256.Sum256([]byte(subjectID + "\x00" + filepath.Base(filename)))
+	bankIDHash := sha256.Sum256([]byte(subjectID + "\x00" + filename))
 	bankID := "user-" + hex.EncodeToString(bankIDHash[:8])
 	for index := range questions {
 		questions[index].ID = bankID + ":" + questions[index].ID
 	}
+	lock := c.scopeLock("user:" + subjectID)
+	lock.Lock()
+	defer lock.Unlock()
 	changed, err := c.repository.ReplaceUserBank(ctx, domain.QuestionBank{
 		ID:        bankID,
 		SubjectID: subjectID,
-		Filename:  filepath.Base(filename),
+		Filename:  filename,
 		Version:   "user-v1",
 		SHA256:    hashText,
 	}, questions)
@@ -108,14 +124,34 @@ func (c *Catalog) ReplaceUserBank(ctx context.Context, subjectID, filename strin
 }
 
 func (c *Catalog) DeleteUserBank(ctx context.Context, subjectID, filename string) error {
-	if err := c.repository.DeleteQuestionBank(ctx, subjectID, filepath.Base(filename)); err != nil {
+	subjectID = strings.TrimSpace(subjectID)
+	filename = filepath.Base(strings.TrimSpace(filename))
+	if subjectID == "" || filename == "" || filename == "." {
+		return fmt.Errorf("questionbank: subject and filename are required")
+	}
+	lock := c.scopeLock("user:" + subjectID)
+	lock.Lock()
+	defer lock.Unlock()
+	if err := c.repository.DeleteQuestionBank(ctx, subjectID, filename); err != nil {
 		return err
 	}
 	return c.rebuildUserScope(ctx, subjectID)
 }
 
 func (c *Catalog) RebuildUserScope(ctx context.Context, subjectID string) error {
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" {
+		return fmt.Errorf("questionbank: subject is required")
+	}
+	lock := c.scopeLock("user:" + subjectID)
+	lock.Lock()
+	defer lock.Unlock()
 	return c.rebuildUserScope(ctx, subjectID)
+}
+
+func (c *Catalog) scopeLock(scope string) *sync.Mutex {
+	value, _ := c.scopeLocks.LoadOrStore(scope, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 func (c *Catalog) rebuildUserScope(ctx context.Context, subjectID string) error {

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
+
 	"interview-agent/internal/domain"
 )
 
@@ -41,6 +43,9 @@ func LoadBuiltin() (BuiltinBank, error) {
 	if err != nil {
 		return BuiltinBank{}, fmt.Errorf("questionbank: read builtin asset: %w", err)
 	}
+	if err := validateBuiltinAssetSchema(content); err != nil {
+		return BuiltinBank{}, err
+	}
 	var bank BuiltinBank
 	decoder := json.NewDecoder(strings.NewReader(string(content)))
 	decoder.DisallowUnknownFields()
@@ -53,6 +58,29 @@ func LoadBuiltin() (BuiltinBank, error) {
 		return BuiltinBank{}, err
 	}
 	return bank, nil
+}
+
+func validateBuiltinAssetSchema(content []byte) error {
+	schemaContent, err := assets.ReadFile("assets/schema.json")
+	if err != nil {
+		return fmt.Errorf("questionbank: read builtin schema: %w", err)
+	}
+	var schemaDocument jsonschema.Schema
+	if err := json.Unmarshal(schemaContent, &schemaDocument); err != nil {
+		return fmt.Errorf("questionbank: decode builtin schema: %w", err)
+	}
+	resolved, err := schemaDocument.Resolve(nil)
+	if err != nil {
+		return fmt.Errorf("questionbank: resolve builtin schema: %w", err)
+	}
+	var document any
+	if err := json.Unmarshal(content, &document); err != nil {
+		return fmt.Errorf("questionbank: decode builtin asset for schema validation: %w", err)
+	}
+	if err := resolved.Validate(document); err != nil {
+		return fmt.Errorf("questionbank: builtin asset violates schema: %w", err)
+	}
+	return nil
 }
 
 func ValidateBuiltin(bank BuiltinBank) error {
