@@ -1,4 +1,4 @@
-.PHONY: dev run build test vet check legacy-run infra-up infra-down infra-status clean
+.PHONY: dev run build test vet check questionbank-generate questionbank-validate legacy-run infra-up infra-down infra-status clean
 
 # Default local server: SQLite + BM25, no Docker or external databases.
 dev:
@@ -19,6 +19,12 @@ check:
 	go build ./...
 	go vet ./...
 	go test ./...
+
+questionbank-generate:
+	go run ./cmd/questionbank-gen
+
+questionbank-validate:
+	go test ./internal/questionbank -run TestBuiltinAssetSchemaNoiseAndIdempotentStartup
 
 # Legacy CLI requires its historical Redis/MySQL/Milvus configuration.
 legacy-run:

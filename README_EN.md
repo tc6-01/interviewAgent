@@ -83,6 +83,20 @@ go test ./...
 
 The test scaffold covers configuration, SQLite bootstrap, liveness/readiness semantics, lightweight end-to-end assembly, and default dependency boundaries.
 
+The builtin Go question bank is cleaned offline into structured JSON. Startup
+loads it idempotently by version and SHA-256, then rebuilds the in-process
+`builtin` BM25 scope:
+
+```bash
+make questionbank-generate  # regenerate the structured asset from migration source
+make questionbank-validate  # validate schema, question types, and promotion-noise rules
+```
+
+User banks use isolated `user:{subject_id}` scopes and are replaced
+idempotently by subject, filename, and content SHA-256. Deletion updates both
+SQLite and the process-local index. Vector services are not required; an
+explicit LLM fallback interface fills retrieval gaps.
+
 ## Docker and optional enhancements
 
 Docker is not required for local development. For a portable single container:

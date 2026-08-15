@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Validate builtin question bank schema and noise rules
+        run: make questionbank-validate
+
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
