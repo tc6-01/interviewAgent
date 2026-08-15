@@ -12,7 +12,7 @@ InterviewAgent 使用 Go 构建，目标是完整覆盖面试方向生成、检�
 前置条件：Go 1.26+ 和一个 OpenAI-compatible API Key。默认配置使用 DashScope `qwen-plus`，使用其他兼容供应商时同时修改 Base URL 与模型名。
 
 ```bash
-git clone https://github.com/tc6-01/interviewAgent.git
+git clone https://github.com/tc6-01/interviewAgent.git interview-agent
 cd interview-agent
 cp .env.example .env
 # 编辑 .env，只需填写 LLM_API_KEY

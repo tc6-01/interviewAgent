@@ -9,7 +9,7 @@ InterviewAgent is a Go application intended to cover interview-direction generat
 Prerequisites: Go 1.26+ and one OpenAI-compatible API key. Defaults target DashScope `qwen-plus`; change the base URL and model together for another provider.
 
 ```bash
-git clone https://github.com/tc6-01/interviewAgent.git
+git clone https://github.com/tc6-01/interviewAgent.git interview-agent
 cd interview-agent
 cp .env.example .env
 # Edit .env and set only LLM_API_KEY
