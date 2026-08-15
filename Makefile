@@ -1,29 +1,37 @@
-.PHONY: run build test infra-up infra-down clean
+.PHONY: dev run build test vet check legacy-run infra-up infra-down infra-status clean
 
-# 运行项目
-run:
-	go run cmd/main.go
+# Default local server: SQLite + BM25, no Docker or external databases.
+dev:
+	go run ./cmd/interview-server
 
-# 编译
+run: dev
+
 build:
-	go build -o bin/interview-agent cmd/main.go
+	go build -o bin/interview-server ./cmd/interview-server
 
-# 运行测试
 test:
-	go test ./... -v
+	go test ./...
 
-# 启动基础设施（Milvus + Redis + MySQL）
+vet:
+	go vet ./...
+
+check:
+	go build ./...
+	go vet ./...
+	go test ./...
+
+# Legacy CLI requires its historical Redis/MySQL/Milvus configuration.
+legacy-run:
+	go run ./cmd
+
 infra-up:
-	docker-compose up -d
+	docker compose --profile enhanced up -d
 
-# 停止基础设施
 infra-down:
-	docker-compose down
+	docker compose --profile enhanced down
 
-# 查看基础设施状态
 infra-status:
-	docker-compose ps
+	docker compose --profile enhanced ps
 
-# 清理编译产物
 clean:
 	rm -rf bin/

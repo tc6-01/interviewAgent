@@ -1,89 +1,112 @@
-# InterviewAgent — AI Mock Interview System
+# InterviewAgent — Open-Source Mock Interview System
 
 [中文文档](README.md) | English
 
-An AI mock interview system built with Go and the [Eino](https://github.com/cloudwego/eino) framework. It orchestrates multiple agents through a DAG to run a full interview loop: JD analysis → resume matching → RAG-based question planning → multi-turn interviewing with dynamic difficulty → evaluation report → review planning.
+InterviewAgent is a Go application intended to cover interview-direction generation, retrieval-based question planning, multi-turn interviewing, conclusions, and review plans. The default runtime is a lightweight modular monolith: SQLite is authoritative storage, in-process BM25 is the default retrieval adapter, and only one OpenAI-compatible LLM key is required.
 
-## Features
+## Five-minute local start
 
-- **Multi-agent orchestration**: 7 specialized agents (chat, JD analyzer, resume matcher, question planner, interviewer, evaluator, review planner) coordinated via an Eino Graph DAG.
-- **Hybrid RAG retrieval**: Milvus vector search + BM25 keyword search, fused with RRF and re-ranked by an LLM / cross-encoder.
-- **RAG quality evaluation**: faithfulness / relevance / completeness scoring.
-- **Dynamic difficulty**: question difficulty adapts in real time to the candidate's performance.
-- **Agent memory**: short-term conversation window + long-term user profile (weak-point tracking), backed by Redis and MySQL.
-- **MCP integration**: Playwright MCP server for JS-rendered job-posting scraping; GitHub search for review-resource recommendations.
-- **Streaming output** for interviewer questions, and persisted interview reports with history queries.
-
-## Quick Start (Docker, one command)
-
-Prerequisites: Docker Desktop (with Docker Compose) and a [DashScope API key](https://dashscope.console.aliyun.com/).
+Prerequisites: Go 1.26+ and one OpenAI-compatible API key. Defaults target DashScope `qwen-plus`; change the base URL and model together for another provider.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/tc6-01/interviewAgent.git
 cd interview-agent
-
 cp .env.example .env
-# Edit .env and set DASHSCOPE_API_KEY=sk-...
-
-docker compose up -d --build
+# Edit .env and set only LLM_API_KEY
+make dev
 ```
 
-This starts the full stack: etcd + MinIO + Milvus (vector DB), Redis, MySQL, and the InterviewAgent web service (API at <http://localhost:9090>). For the web UI, see the frontend section below (`interview-agent-web`, dev server at <http://localhost:5173>).
-
-Check status:
+The health endpoints do not make provider requests:
 
 ```bash
-docker compose ps
+curl http://localhost:9090/healthz
+curl http://localhost:9090/readyz
 ```
 
-Stop everything:
+- `/healthz` checks process liveness only.
+- `/readyz` checks configuration, SQLite, in-process BM25, and local assembly only.
+- SQLite defaults to `data/interview.db`; its directory is created automatically.
 
-```bash
-docker compose down          # keep data volumes
-docker compose down -v       # remove data volumes too
+## Default architecture
+
+```text
+cmd/interview-server
+        │
+        ▼
+internal/httpapi
+        │
+        ▼
+internal/session
+        │
+        ▼
+internal/core/graph → internal/core/agent
+        │
+        ▼
+internal/domain interfaces
+        ▲
+        │
+internal/adapters/{sqlite,bm25,llm/openai}
 ```
 
-## Local Development
+Concrete implementations are wired only in `internal/bootstrap`. HTTP does not depend on Redis, MySQL, or Milvus drivers, and agents do not know about HTTP/SSE. Architecture tests inspect the default binary dependency graph so legacy services cannot silently become startup requirements again.
 
-Requirements: Go 1.22+, Node.js 18+ (for the Playwright MCP server), Docker.
+The historical `cmd`, `internal/handler`, `internal/memory`, and `internal/rag` packages remain available for migration and optional enhancements, but `make dev` does not assemble them.
+
+## Configuration
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `LLM_API_KEY` | yes | none | the only required secret |
+| `LLM_BASE_URL` | no | DashScope compatible-mode | OpenAI-compatible endpoint |
+| `LLM_MODEL` | no | `qwen-plus` | default model |
+| `HTTP_ADDR` | no | `:9090` | HTTP listen address |
+| `SQLITE_PATH` | no | `data/interview.db` | SQLite file; tests may use `:memory:` |
+| `LLM_TIMEOUT` | no | `60s` | future business-request timeout |
+| `LLM_MAX_CONCURRENCY` | no | `4` | future global model concurrency limit |
+| `SHUTDOWN_TIMEOUT` | no | `10s` | graceful-shutdown timeout |
+
+`.env.example` also documents legacy enhancement variables. They are empty by default and are not read by `cmd/interview-server`.
+
+## Development and verification
 
 ```bash
-# Start infrastructure only (Milvus + Redis + MySQL)
-make infra-up
+make check
+```
 
-# Run the CLI
-go run cmd/main.go chat        # chat mode
-go run cmd/main.go interview   # interview mode
-go run cmd/main.go web         # HTTP/SSE web service on :9090
-go run cmd/main.go load-data   # seed the question bank
+Equivalent gates:
 
-# Frontend (web UI, requires Node.js 18+)
-cd interview-agent-web && npm install && npm run dev   # http://localhost:5173
-
-# Build & test
+```bash
 go build ./...
 go vet ./...
 go test ./...
 ```
 
-See the [Chinese README](README.md) for a step-by-step setup walkthrough, project structure, and FAQ.
+The test scaffold covers configuration, SQLite bootstrap, liveness/readiness semantics, lightweight end-to-end assembly, and default dependency boundaries.
 
-## Tech Stack
+## Docker and optional enhancements
 
-| Layer | Technology |
-| --- | --- |
-| Language | Go 1.22+ |
-| Agent framework | CloudWeGo Eino (Graph DAG) |
-| LLM / Embedding | Qwen (DashScope): qwen-plus, text-embedding-v3, gte-rerank |
-| Vector DB | Milvus 2.4 (standalone) |
-| Cache / Memory | Redis 7 |
-| Persistence | MySQL 8 |
-| Tooling | MCP (Playwright, GitHub) |
-| Frontend | `interview-agent-web/` (web UI) |
+Docker is not required for local development. For a portable single container:
+
+```bash
+docker build -t interview-agent .
+docker run --rm -p 9090:9090 --env-file .env interview-agent
+```
+
+Redis, MySQL, and Milvus in `docker-compose.yml` are isolated in the `enhanced` profile for future optional-driver verification:
+
+```bash
+make infra-up
+```
+
+They are not prerequisites for the lightweight server.
+
+## Legacy CLI during migration
+
+The historical CLI and WebSocket implementation can still be started with `make legacy-run`, but it requires its original DashScope, Redis, MySQL, and Milvus configuration. It is not the MVP default path.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). CI (GitHub Actions) runs build, vet, tests, and Docker builds on every PR.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Changes land through pull requests to `master`; run `make check` before submitting.
 
 ## License
 

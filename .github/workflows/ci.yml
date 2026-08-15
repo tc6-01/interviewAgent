@@ -54,7 +54,7 @@ jobs:
         if: steps.detect.outputs.present == 'true'
         working-directory: interview-agent-web
         run: |
-          npm ci || npm install
+          npm ci
           npm run build
 
   docker:
