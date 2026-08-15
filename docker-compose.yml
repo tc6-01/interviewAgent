@@ -1,8 +1,7 @@
-version: '3.8'
-
 services:
   # Milvus 向量数据库（standalone 模式）
   etcd:
+    profiles: ["enhanced"]
     image: quay.m.daocloud.io/coreos/etcd:v3.5.5
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
@@ -19,6 +18,7 @@ services:
       retries: 3
 
   minio:
+    profiles: ["enhanced"]
     image: docker.m.daocloud.io/minio/minio:RELEASE.2023-03-20T20-16-18Z
     environment:
       MINIO_ACCESS_KEY: minioadmin
@@ -36,6 +36,7 @@ services:
       retries: 3
 
   milvus:
+    profiles: ["enhanced"]
     image: docker.m.daocloud.io/milvusdb/milvus:v2.4.1
     command: ["milvus", "run", "standalone"]
     security_opt:
@@ -59,6 +60,7 @@ services:
 
   # Redis 缓存
   redis:
+    profiles: ["enhanced"]
     image: docker.m.daocloud.io/library/redis:7-alpine
     ports:
       - "6379:6379"
@@ -73,6 +75,7 @@ services:
 
   # MySQL 持久化存储
   mysql:
+    profiles: ["enhanced"]
     image: docker.m.daocloud.io/library/mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: interview
@@ -89,9 +92,32 @@ services:
       timeout: 5s
       retries: 3
 
+  # InterviewAgent 应用（Web/API 服务）
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      HTTP_ADDR: :9090
+      SQLITE_PATH: /app/data/interview.db
+    ports:
+      - "9090:9090"
+    volumes:
+      - app_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
 volumes:
   etcd_data:
   minio_data:
   milvus_data:
   redis_data:
   mysql_data:
+  app_data:

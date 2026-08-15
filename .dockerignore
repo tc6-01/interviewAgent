@@ -1,0 +1,11 @@
+.git
+.idea
+.playwright-mcp
+bin/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+interview-agent-web/node_modules
+interview-agent-web/dist
+*.log
+.env
