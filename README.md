@@ -1,5 +1,10 @@
 # InterviewAgent - AI 模拟面试系统
 
+中文 | [English](README_EN.md)
+
+[![CI](https://github.com/wangyangyang/interview-agent/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 基于 Go + [Eino](https://github.com/cloudwego/eino) 框架构建的 AI 模拟面试系统。支持多 Agent 协作、RAG 多路召回、动态难度调节、面试评估报告生成等核心能力。
 
 ## 系统架构
@@ -40,6 +45,30 @@ Agent 编排层（Eino Graph DAG）
 - **MCP 协议集成**：通过 Playwright MCP Server 实现 JS 渲染网页抓取（招聘页面 JD 提取），GitHub 项目搜索（复习资源推荐）
 - **流式输出**：面试官提问支持流式响应
 - **面试记录持久化**：每次面试的评估报告和复习计划写入 MySQL，支持历史查询
+
+## 快速开始（Docker 一键启动）
+
+只需 Docker Desktop 和一个[通义千问 DashScope API Key](https://dashscope.console.aliyun.com/)：
+
+```bash
+git clone <项目下载地址>
+cd interview-agent
+
+cp .env.example .env
+# 编辑 .env，填入 DASHSCOPE_API_KEY=sk-你的key
+
+docker compose up -d --build
+```
+
+该命令会启动完整 demo：etcd + MinIO + Milvus（向量数据库）、Redis、MySQL，以及 InterviewAgent Web 服务（API 地址 <http://localhost:9090>）。前端界面见「详细运行指南」第七步（`interview-agent-web`，开发服务器 <http://localhost:5173>）。
+
+```bash
+docker compose ps        # 查看各容器状态（首次拉镜像约 3~5 分钟）
+docker compose down      # 停止（保留数据卷）
+docker compose down -v   # 停止并清除数据卷
+```
+
+如需本地开发（CLI 模式、单独跑基础设施），请看下方「详细运行指南」。
 
 ## 项目结构
 
@@ -378,3 +407,11 @@ make infra-status  # 查看容器状态
      │  长期记忆：用户画像 + 薄弱点追踪       │
      └──────────────────────────────────────┘
 ```
+
+## 贡献
+
+欢迎提 Issue 和 Pull Request，流程与规范见 [CONTRIBUTING.md](CONTRIBUTING.md)。CI（GitHub Actions）会在每个 PR 上自动运行编译、静态检查、测试和 Docker 构建。
+
+## 许可证
+
+[MIT](LICENSE)

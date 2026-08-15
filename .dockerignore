@@ -1,0 +1,8 @@
+.git
+.idea
+.playwright-mcp
+bin/
+interview-agent-web/node_modules
+interview-agent-web/dist
+*.log
+.env

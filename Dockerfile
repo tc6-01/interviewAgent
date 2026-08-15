@@ -11,7 +11,7 @@ RUN go mod download
 
 # 编译
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/interview-agent ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/interview-agent ./cmd
 
 # ---- Runtime Stage ----
 FROM alpine:3.20
@@ -24,7 +24,7 @@ COPY --from=builder /app/interview-agent .
 COPY --from=builder /app/data ./data
 
 # Web 服务默认端口
-EXPOSE 8080
+EXPOSE 9090
 
 ENTRYPOINT ["./interview-agent"]
 CMD ["web"]
