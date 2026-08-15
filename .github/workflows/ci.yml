@@ -4,7 +4,6 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
 
 jobs:
   go:
@@ -50,11 +49,13 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install & build
+      - name: Install & verify
         if: steps.detect.outputs.present == 'true'
         working-directory: interview-agent-web
         run: |
           npm ci
+          npm run typecheck
+          npm run test:run
           npm run build
 
   docker:

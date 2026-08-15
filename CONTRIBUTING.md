@@ -19,6 +19,12 @@
 
    ```bash
    make check           # build + vet + test
+
+   cd interview-agent-web
+   npm ci
+   npm run typecheck
+   npm run test:run
+   npm run build
    ```
 
 4. 提交并推送，然后发起 Pull Request，描述清楚改动内容和动机。
@@ -36,7 +42,7 @@ Commit message 使用 [Conventional Commits](https://www.conventionalcommits.org
 - Go 代码使用 `gofmt` 格式化，遵循标准 Go 项目惯例。
 - 默认服务必须保持 `httpapi → session → graph/agent → domain interfaces → adapters` 的单向依赖；基础设施实现只在 `internal/bootstrap` 装配。
 - 默认启动路径不得依赖 Redis、MySQL、Milvus 或 Embedding 服务。
-- 前端代码（`interview-agent-web/`）遵循目录内既有的组件与命名风格。
+- 前端代码（`interview-agent-web/`）复用 `src/styles.css` 中的视觉令牌，保持 HTTP/SSE 契约类型同步。
 - 新增功能请尽量附带测试。
 
 ### 分支与 CI
@@ -61,6 +67,12 @@ Thanks for your interest in InterviewAgent! Contributions of all kinds are welco
 
    ```bash
    make check           # build + vet + test
+
+   cd interview-agent-web
+   npm ci
+   npm run typecheck
+   npm run test:run
+   npm run build
    ```
 
 4. Commit, push, and open a Pull Request describing what changed and why.
@@ -78,7 +90,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 - Go code must be `gofmt`-formatted and follow standard Go project conventions.
 - Keep the default service dependency direction `httpapi → session → graph/agent → domain interfaces → adapters`; wire infrastructure only in `internal/bootstrap`.
 - Do not add Redis, MySQL, Milvus, or embedding services to the default startup path.
-- Frontend code (`interview-agent-web/`) should follow the existing component and naming style.
+- Frontend code (`interview-agent-web/`) should reuse the tokens in `src/styles.css` and keep the HTTP/SSE contract types synchronized.
 - Please add tests for new functionality where practical.
 
 ### Branches & CI
