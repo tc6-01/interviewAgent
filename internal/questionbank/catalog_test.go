@@ -49,9 +49,17 @@ func TestBuiltinAssetSchemaNoiseAndIdempotentStartup(t *testing.T) {
 		t.Fatalf("schema question type enum = %#v, want three values", typeSchema["enum"])
 	}
 	wantTypes := map[string]bool{"basic": true, "experience": true, "design": true}
+	seenTypes := make(map[string]int, len(enum))
 	for _, value := range enum {
-		if typeName, ok := value.(string); !ok || !wantTypes[typeName] {
+		typeName, ok := value.(string)
+		if !ok || !wantTypes[typeName] {
 			t.Fatalf("schema question type enum = %#v, want basic/experience/design", enum)
+		}
+		seenTypes[typeName]++
+	}
+	for typeName := range wantTypes {
+		if seenTypes[typeName] != 1 {
+			t.Fatalf("schema question type enum = %#v, want each of basic/experience/design exactly once", enum)
 		}
 	}
 
