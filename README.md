@@ -103,6 +103,32 @@ make infra-up
 
 它们不会成为轻量服务器的启动条件。
 
+## Web 前端
+
+前端默认启用内置 Mock，可在没有后端和密钥时独立体验完整的固定 15 题流程：
+
+```bash
+cd interview-agent-web
+npm ci             # 按锁文件确定性安装依赖
+npm run dev        # 启动开发服务器
+```
+
+启动后访问 http://localhost:5173 即可使用。前端默认启用内置 Mock，可独立体验完整流程；联调真实 HTTP/SSE 后端时执行：
+
+```bash
+VITE_API_MODE=real npm run dev
+```
+
+静态构建：
+
+```bash
+npm run typecheck
+npm run test:run
+VITE_API_MODE=mock npm run build
+```
+
+产物位于 `interview-agent-web/dist/`，使用相对资源路径与 Hash 路由，可直接部署到 GitHub Pages。完整接入说明见 [`interview-agent-web/README.md`](interview-agent-web/README.md)。
+
 ## 旧 CLI（迁移期）
 
 历史 CLI 与 WebSocket 实现仍可通过 `make legacy-run` 启动，但需要其原有的 DashScope、Redis、MySQL、Milvus 等配置，不代表 MVP 默认路径。后续任务会逐步把能力迁移到 HTTP/SSE 与新的领域接口。

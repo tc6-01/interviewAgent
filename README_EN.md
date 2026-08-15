@@ -83,6 +83,26 @@ go test ./...
 
 The test scaffold covers configuration, SQLite bootstrap, liveness/readiness semantics, lightweight end-to-end assembly, and default dependency boundaries.
 
+### Web frontend
+
+The frontend requires Node.js 20.19+ or 22.12+ and defaults to a built-in mock that runs the complete fixed 15-question flow without a backend or API key:
+
+```bash
+cd interview-agent-web
+npm ci
+npm run dev
+
+# Connect to the real HTTP/SSE API instead of the built-in demo
+VITE_API_MODE=real npm run dev
+
+# Typecheck, test, and create a GitHub Pages-ready static build
+npm run typecheck
+npm run test:run
+VITE_API_MODE=mock npm run build
+```
+
+The production same-origin build uses `VITE_API_MODE=real` and is embedded by the Go service. GitHub Pages is only for the static mock preview. See [`interview-agent-web/README.md`](interview-agent-web/README.md) for details.
+
 ## Docker and optional enhancements
 
 Docker is not required for local development. For a portable single container:
@@ -103,6 +123,8 @@ They are not prerequisites for the lightweight server.
 ## Legacy CLI during migration
 
 The historical CLI and WebSocket implementation can still be started with `make legacy-run`, but it requires its original DashScope, Redis, MySQL, and Milvus configuration. It is not the MVP default path.
+
+The frontend uses hash routing and relative asset URLs, so `interview-agent-web/dist/` can be hosted under a GitHub Pages repository path. See [`interview-agent-web/README.md`](interview-agent-web/README.md) for API mode and SSE reconnection details.
 
 ## Contributing
 

@@ -6,3 +6,5 @@
 /data/*.db-wal
 /interview-agent-web/node_modules/
 /interview-agent-web/dist/
+/interview-agent-web/.env
+/interview-agent-web/*.tsbuildinfo
