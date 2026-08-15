@@ -352,6 +352,9 @@ input[type="range"] { accent-color: var(--color-accent); }
 .insight-list li > span { display: grid; width: 1.7rem; height: 1.7rem; flex: none; place-items: center; border-radius: 50%; color: var(--color-gold); background: var(--color-gold-soft); font-size: 0.67rem; font-weight: 800; }
 .insight-list--positive li > span { color: var(--color-sage); background: var(--color-sage-soft); }
 .insight-list p { margin: 0; color: var(--color-ink-soft); font-size: var(--text-sm); }
+.weakness-copy { display: flex; flex-direction: column; gap: var(--space-1); }
+.weakness-copy strong { color: var(--color-ink); font-weight: 750; }
+.weakness-copy small { color: var(--color-ink-faint); font-size: var(--text-xs); line-height: 1.6; }
 .result-card--markdown { grid-column: 1 / -1; }
 .markdown-text h1, .markdown-text h2, .markdown-text h3 { font-family: var(--font-display); font-weight: 500; }
 .markdown-text p, .markdown-text li { color: var(--color-ink-soft); }

@@ -1,13 +1,12 @@
 import type { InterviewFocus } from "../types/ui";
 import { CheckIcon, SparkIcon, TargetIcon } from "./Icons";
+import { INTERVIEW_QUESTION_COUNT } from "../config/interview";
 
 interface FocusReviewProps {
   focus: InterviewFocus;
-  questionCount: number;
-  onQuestionCountChange: (value: number) => void;
 }
 
-export function FocusReview({ focus, questionCount, onQuestionCountChange }: FocusReviewProps) {
+export function FocusReview({ focus }: FocusReviewProps) {
   return (
     <section className="focus-review">
       <div className="focus-review__intro">
@@ -30,7 +29,7 @@ export function FocusReview({ focus, questionCount, onQuestionCountChange }: Foc
         </article>
         <article>
           <span>问题数量</span>
-          <strong>{questionCount} 题</strong>
+          <strong>{INTERVIEW_QUESTION_COUNT} 题</strong>
         </article>
       </div>
 
@@ -53,11 +52,10 @@ export function FocusReview({ focus, questionCount, onQuestionCountChange }: Foc
         </div>
       </div>
 
-      <label className="range-field">
-        <span><strong>面试长度</strong><small>建议预留 {Math.max(15, questionCount * 3)}–{Math.max(25, questionCount * 5)} 分钟</small></span>
-        <input type="range" min="5" max="15" step="1" value={questionCount} onChange={(event) => onQuestionCountChange(Number(event.target.value))} />
-        <output>{questionCount} 题</output>
-      </label>
+      <div className="range-field">
+        <span><strong>标准 Alpha 面试</strong><small>固定 15 题，建议预留 45–75 分钟</small></span>
+        <output>{INTERVIEW_QUESTION_COUNT} 题</output>
+      </div>
     </section>
   );
 }

@@ -8,6 +8,7 @@ import { ProgressSteps } from "../components/ProgressSteps";
 import { SourceInput } from "../components/SourceInput";
 import { deriveInterviewFocus } from "../lib/focus";
 import { useAppStore } from "../store/app-store";
+import { INTERVIEW_QUESTION_COUNT } from "../config/interview";
 
 export function SetupPage() {
   const { state, dispatch } = useAppStore();
@@ -67,13 +68,13 @@ export function SetupPage() {
       const response = await api.createInterview({
         jd_text: setup.jdText,
         resume_text: setup.resumeText,
-        options: { question_count: setup.questionCount },
+        options: { question_count: INTERVIEW_QUESTION_COUNT },
       });
       dispatch({
         type: "create_session",
         response,
         focus: setup.focus,
-        total: setup.questionCount,
+        total: INTERVIEW_QUESTION_COUNT,
       });
       navigate(`/interview/${encodeURIComponent(response.interview_id)}`);
     } catch (startError) {
@@ -137,12 +138,12 @@ export function SetupPage() {
               <button className="back-link" type="button" onClick={() => dispatch({ type: "patch_setup", patch: { focus: null } })}><ArrowLeftIcon /> 返回修改资料</button>
               <span className="eyebrow">方向确认</span>
               <h1>准备好了，<em>就开始。</em></h1>
-              <p>你可以调整面试长度。最终分析会在开始后通过实时事件逐步展示。</p>
+              <p>本轮固定 15 题。最终分析会在开始后通过实时事件逐步展示。</p>
             </section>
             {error && <div className="alert alert--error" role="alert">{error}</div>}
-            <FocusReview focus={setup.focus} questionCount={setup.questionCount} onQuestionCountChange={(questionCount) => dispatch({ type: "patch_setup", patch: { questionCount } })} />
+            <FocusReview focus={setup.focus} />
             <div className="setup-cta setup-cta--review">
-              <div><span>预计用时</span><strong>{Math.max(15, setup.questionCount * 3)}–{Math.max(25, setup.questionCount * 5)} 分钟</strong></div>
+              <div><span>预计用时</span><strong>45–75 分钟</strong></div>
               <button className="button button--primary button--large" type="button" onClick={() => void startInterview()} disabled={starting}>
                 {starting ? "正在创建面试…" : "开始模拟面试"} {!starting && <ArrowRightIcon />}
               </button>

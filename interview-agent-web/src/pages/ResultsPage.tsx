@@ -10,42 +10,90 @@ import { useAppStore } from "../store/app-store";
 export function ResultsPage({ interviewId }: { interviewId: string }) {
   const { state, dispatch } = useAppStore();
   const session = state.sessions[interviewId];
-  const [loading, setLoading] = useState(!session?.report || !session?.reviewPlan);
+  const [loading, setLoading] = useState(!session?.report);
   const [error, setError] = useState<string | null>(null);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [retryingPlan, setRetryingPlan] = useState(false);
   const [tab, setTab] = useState<"report" | "plan">("report");
 
   useEffect(() => {
-    if (session?.report && session.reviewPlan) {
-      setLoading(false);
-      return;
-    }
+    let cancelled = false;
     const load = async () => {
       try {
-        const [report, plan] = await Promise.all([api.getReport(interviewId), api.getReviewPlan(interviewId)]);
-        dispatch({
-          type: "patch_session",
-          id: interviewId,
-          patch: {
-            report: report.report,
-            reportMarkdown: report.report_markdown,
-            reviewPlan: plan.plan,
-            planMarkdown: plan.plan_markdown,
-            status: "completed",
-          },
-        });
+        if (!session) {
+          const snapshot = await api.getInterview(interviewId);
+          if (cancelled) return;
+          dispatch({ type: "hydrate_session", snapshot });
+        }
+
+        if (!session?.report) {
+          const report = await api.getReport(interviewId);
+          if (cancelled) return;
+          dispatch({
+            type: "patch_session",
+            id: interviewId,
+            patch: { report: report.report, reportMarkdown: report.report_markdown },
+          });
+        }
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "加载结果失败");
+        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "加载评估报告失败");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
+      }
+
+      if (!session?.reviewPlan) {
+        try {
+          const plan = await api.getReviewPlan(interviewId);
+          if (cancelled) return;
+          dispatch({
+            type: "patch_session",
+            id: interviewId,
+            patch: {
+              reviewPlan: plan.plan,
+              planMarkdown: plan.plan_markdown,
+              status: "completed",
+            },
+          });
+        } catch (loadError) {
+          if (!cancelled) {
+            setPlanError(loadError instanceof Error ? loadError.message : "加载复习计划失败");
+          }
+        }
       }
     };
     void load();
-  }, [dispatch, interviewId, session?.report, session?.reviewPlan]);
+    return () => {
+      cancelled = true;
+    };
+    // Load once per result route; store updates are applied by the dispatched actions above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, interviewId]);
+
+  const retryPlan = async () => {
+    setRetryingPlan(true);
+    setPlanError(null);
+    try {
+      const plan = await api.retryReviewPlan(interviewId);
+      dispatch({
+        type: "patch_session",
+        id: interviewId,
+        patch: {
+          reviewPlan: plan.plan,
+          planMarkdown: plan.plan_markdown,
+          status: "completed",
+        },
+      });
+    } catch (retryError) {
+      setPlanError(retryError instanceof Error ? retryError.message : "复习计划重试失败");
+    } finally {
+      setRetryingPlan(false);
+    }
+  };
 
   if (loading) {
     return <AppShell><main className="center-state"><span className="loader-orbit"><SparkIcon /></span><h1>正在整理你的复盘</h1><p>汇总评分、优势、薄弱点与学习路径…</p></main></AppShell>;
   }
-  if (!session?.report || !session.reviewPlan) {
+  if (!session?.report) {
     return <AppShell><main className="center-state"><h1>报告暂时不可用</h1><p>{error ?? "结果仍在生成，请稍后再试。"}</p><button className="button button--primary" type="button" onClick={() => window.location.reload()}>重新加载</button></main></AppShell>;
   }
 
@@ -111,13 +159,21 @@ export function ResultsPage({ interviewId }: { interviewId: string }) {
             <section className="result-card result-card--weaknesses">
               <div className="section-heading"><span className="eyebrow">GROWTH AREAS</span><h2>下一步突破点</h2></div>
               <ul className="insight-list">
-                {report.weaknesses.map((item, index) => <li key={item}><span>{String(index + 1).padStart(2, "0")}</span><p>{item}</p></li>)}
+                {report.weaknesses.map((item, index) => {
+                  const citation = report.detailed_review.find((review) => review.topic === item);
+                  return (
+                    <li key={item}>
+                      <span>{String(index + 1).padStart(2, "0")}</span>
+                      <p className="weakness-copy"><strong>{item}</strong>{citation?.summary && <small>{citation.summary}</small>}</p>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
 
             {session.reportMarkdown && <section className="result-card result-card--markdown"><MarkdownText content={session.reportMarkdown} /></section>}
           </div>
-        ) : (
+        ) : reviewPlan ? (
           <div className="plan-layout">
             <section className="result-card plan-overview">
               <div className="section-heading"><span className="eyebrow">YOUR FOCUS</span><h2>优先补齐这三个方向</h2></div>
@@ -147,10 +203,18 @@ export function ResultsPage({ interviewId }: { interviewId: string }) {
 
             {session.planMarkdown && <section className="result-card result-card--markdown"><MarkdownText content={session.planMarkdown} /></section>}
           </div>
+        ) : (
+          <section className="result-card plan-retry-card" role="status">
+            <div className="section-heading"><span className="eyebrow">REVIEW PLAN</span><h2>评估已完成，复习计划需要重试</h2></div>
+            <p>{planError ?? "复习计划暂时不可用，可以只重试这一阶段，不会重复面试或评估。"}</p>
+            <button className="button button--primary" type="button" onClick={() => void retryPlan()} disabled={retryingPlan}>
+              <RefreshIcon /> {retryingPlan ? "正在重新生成…" : "重试生成复习计划"}
+            </button>
+          </section>
         )}
 
         <section className="results-next">
-          <div><span className="eyebrow">KEEP PRACTICING</span><h2>准备下一次模拟？</h2><p>换一个岗位、调整问题数量，或带着复习成果再来一轮。</p></div>
+          <div><span className="eyebrow">KEEP PRACTICING</span><h2>准备下一次模拟？</h2><p>换一个岗位，或带着复习成果完成新一轮 15 题面试。</p></div>
           <button className="button button--primary button--large" type="button" onClick={restart}><RefreshIcon /> 开始新的面试</button>
         </section>
       </main>

@@ -3,16 +3,16 @@
 InterviewAgent 的 React + TypeScript 前端，覆盖完整模拟面试流程：
 
 1. 输入或上传 JD / 简历
-2. 确认面试岗位、级别、重点与题量
+2. 确认面试岗位、级别与重点，进入固定 15 题的 Alpha 面试
 3. 通过 HTTP 提交回答，通过 SSE 接收阶段、流式问题、评分与终态
-4. 查看评估报告、复习计划并导出 Markdown
+4. 查看评估报告、弱项引用与复习计划，计划失败时可单独重试并导出 Markdown
 
 ## 本地启动
 
 需要 Node.js 20.19+ 或 22.12+。
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -72,3 +72,5 @@ src/
 - 页面恢复时先请求 `GET /interviews/{id}`，再从快照的 `last_event_id` 订阅事件。
 - `question_delta` 只用于即时渲染；完整 `question` 事件是最终权威文本。
 - 未识别的事件和字段会被忽略，避免服务端扩展破坏旧前端。
+- 回答接口返回 `409` 时先恢复最新快照，明确提示回答已提交，避免重复写入。
+- 复习计划失败时调用 `POST /interviews/{id}/review-plan/retry`，不会重跑面试或评估。

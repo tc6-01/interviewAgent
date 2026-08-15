@@ -113,7 +113,7 @@ npm ci             # 按锁文件确定性安装依赖
 npm run dev        # 启动开发服务器
 ```
 
-启动后访问 http://localhost:5173 即可使用。前端默认启用内置 Mock，可独立体验完整流程；联调真实 HTTP/SSE 后端时执行：
+启动后访问 http://localhost:5173 即可使用。联调真实 HTTP/SSE 后端时执行：
 
 ```bash
 VITE_API_MODE=real npm run dev
@@ -127,7 +127,7 @@ npm run test:run
 VITE_API_MODE=mock npm run build
 ```
 
-产物位于 `interview-agent-web/dist/`，使用相对资源路径与 Hash 路由，可直接部署到 GitHub Pages。完整接入说明见 [`interview-agent-web/README.md`](interview-agent-web/README.md)。
+产物位于 `interview-agent-web/dist/`，使用相对资源路径与 Hash 路由，可直接部署到 GitHub Pages 的静态 Mock 预览。生产构建必须使用 `VITE_API_MODE=real` 并由 Go 服务同源嵌入；完整接入说明见 [`interview-agent-web/README.md`](interview-agent-web/README.md)。
 
 ## 旧 CLI（迁移期）
 

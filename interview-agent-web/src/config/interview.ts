@@ -1,0 +1,1 @@
+export const INTERVIEW_QUESTION_COUNT = 15;

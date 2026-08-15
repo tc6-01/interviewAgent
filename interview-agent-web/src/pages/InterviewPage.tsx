@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { InterviewApiError } from "../api/errors";
 import { navigate } from "../app/router";
 import { AppShell } from "../components/AppShell";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -80,7 +81,18 @@ export function InterviewPage({ interviewId }: { interviewId: string }) {
       dispatch({ type: "candidate_message", id: interviewId, promptId, content });
       setAnswer("");
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : "提交回答失败");
+      if (error instanceof InterviewApiError && error.status === 409) {
+        try {
+          const snapshot = await api.getInterview(interviewId);
+          dispatch({ type: "hydrate_session", snapshot });
+          setAnswer("");
+          setPageError("回答已被服务端接收，页面已同步到最新进度，请勿重复提交。");
+        } catch {
+          setPageError(error.message);
+        }
+      } else {
+        setPageError(error instanceof Error ? error.message : "提交回答失败");
+      }
     } finally {
       setSubmitting(false);
     }

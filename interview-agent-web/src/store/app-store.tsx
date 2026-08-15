@@ -23,7 +23,6 @@ interface SetupDraft {
   resumeText: string;
   jdSourceName: string;
   resumeSourceName: string;
-  questionCount: number;
   focus: InterviewFocus | null;
 }
 
@@ -53,7 +52,6 @@ const emptySetup: SetupDraft = {
   resumeText: "",
   jdSourceName: "",
   resumeSourceName: "",
-  questionCount: 8,
   focus: null,
 };
 
@@ -64,7 +62,10 @@ function readPersistedState(): AppState {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return initialState;
     const parsed = JSON.parse(raw) as AppState;
-    return { setup: { ...emptySetup, ...parsed.setup }, sessions: parsed.sessions ?? {} };
+    return {
+      setup: { ...emptySetup, ...parsed.setup },
+      sessions: parsed.sessions ?? {},
+    };
   } catch {
     return initialState;
   }
@@ -161,7 +162,7 @@ function messagesFromSnapshot(snapshot: InterviewSnapshot): ChatMessage[] {
   return messages;
 }
 
-function hydrateSession(snapshot: InterviewSnapshot, existing?: InterviewSessionState): InterviewSessionState {
+export function hydrateSession(snapshot: InterviewSnapshot, existing?: InterviewSessionState): InterviewSessionState {
   return {
     id: snapshot.interview_id,
     status: snapshot.status,
@@ -195,7 +196,7 @@ function appendUnique(messages: ChatMessage[], message: ChatMessage): ChatMessag
   return messages.some((item) => item.id === message.id) ? messages : [...messages, message];
 }
 
-function applyEvent(session: InterviewSessionState, message: SseMessage): InterviewSessionState {
+export function applyEvent(session: InterviewSessionState, message: SseMessage): InterviewSessionState {
   const next = { ...session, lastEventId: message.id ?? session.lastEventId };
   const data = message.data as Record<string, unknown>;
 

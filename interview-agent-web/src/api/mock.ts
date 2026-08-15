@@ -10,6 +10,8 @@ import type {
   SseMessage,
 } from "../types/api";
 import type { InterviewApi, ParseDocumentInput, SubscribeOptions } from "./client";
+import { InterviewApiError } from "./errors";
+import { INTERVIEW_QUESTION_COUNT } from "../config/interview";
 
 interface MockSession {
   snapshot: InterviewSnapshot;
@@ -22,41 +24,57 @@ interface MockSession {
   subscribers: Set<(message: SseMessage) => void>;
   report?: ReportResponse;
   reviewPlan?: ReviewPlanResponse;
+  reviewPlanFailuresRemaining: number;
 }
 
-const wait = (milliseconds: number) =>
-  new Promise<void>((resolve) => globalThis.setTimeout(resolve, milliseconds));
+interface MockInterviewApiOptions {
+  delayScale?: number;
+  failReviewPlanOnce?: boolean;
+}
 
-const sampleQuestions: Question[] = [
-  {
-    prompt_id: "prompt_1_main",
-    question_no: 1,
-    kind: "primary",
-    content: "请先选一个你最有代表性的项目，说明你负责的部分、遇到的关键挑战，以及最终产生的结果。",
-    source: "demo:project-impact",
-  },
-  {
-    prompt_id: "prompt_2_main",
-    question_no: 2,
-    kind: "primary",
-    content: "如果线上接口的 P99 延迟突然升高，你会怎样定位？请按排查顺序说明你关注的指标和判断依据。",
-    source: "demo:system-debugging",
-  },
-  {
-    prompt_id: "prompt_3_main",
-    question_no: 3,
-    kind: "primary",
-    content: "现在需要把一个单体服务拆成可扩展的架构，你会如何划分边界，并处理数据一致性与故障恢复？",
-    source: "demo:system-design",
-  },
-];
+const sampleQuestionContent = [
+  "请先选一个你最有代表性的项目，说明你负责的部分、遇到的关键挑战，以及最终产生的结果。",
+  "如果线上接口的 P99 延迟突然升高，你会怎样定位？请按排查顺序说明你关注的指标和判断依据。",
+  "现在需要把一个单体服务拆成可扩展的架构，你会如何划分边界，并处理数据一致性与故障恢复？",
+  "请说明你做过的一次关键技术选型。当时有哪些备选方案，你如何验证并承担最终结果？",
+  "一个依赖服务开始间歇性超时，你会怎样设计重试、熔断、降级与监控，避免故障继续放大？",
+  "请设计一个支持突发流量的任务处理系统，说明队列、幂等、背压和失败补偿策略。",
+  "线上出现数据不一致但没有明显报错时，你会如何缩小范围、保护现场并推进修复？",
+  "请结合实际经历说明你如何推动一次跨团队技术改造，以及遇到分歧时怎样达成共识。",
+  "如果核心数据库容量将在三个月内触顶，你会如何完成容量评估、拆分方案与迁移演练？",
+  "请解释缓存穿透、击穿和雪崩的差异，并给出你会在生产环境采用的组合治理方案。",
+  "面对一个缺少测试、频繁回归的老系统，你会怎样分阶段补齐质量保障而不阻塞业务迭代？",
+  "请设计关键链路的可观测性方案，说明日志、指标、追踪和告警分别解决什么问题。",
+  "当需求目标明确但实现周期明显不足时，你会如何拆范围、识别风险并与产品负责人沟通？",
+  "请复盘一次你判断失误或方案失败的经历。你后来如何修正，并沉淀了什么机制？",
+  "最后，请总结你与这个岗位最匹配的三项能力，以及入职后最希望优先补齐的一项能力。",
+] as const;
+
+const sampleQuestions: Question[] = sampleQuestionContent.map((content, index) => ({
+  prompt_id: `prompt_${index + 1}_main`,
+  question_no: index + 1,
+  kind: "primary",
+  content,
+  source: `demo:question-${index + 1}`,
+}));
 
 export class MockInterviewApi implements InterviewApi {
   readonly mode = "mock" as const;
   private sessions = new Map<string, MockSession>();
+  private readonly delayScale: number;
+  private readonly failReviewPlanOnce: boolean;
+
+  constructor(options: MockInterviewApiOptions = {}) {
+    this.delayScale = options.delayScale ?? 1;
+    this.failReviewPlanOnce = options.failReviewPlanOnce ?? false;
+  }
+
+  private wait(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds * this.delayScale));
+  }
 
   async parseDocument(input: ParseDocumentInput): Promise<ParsedDocument> {
-    await wait(450);
+    await this.wait(450);
     let text = input.text?.trim() ?? "";
     if (input.file) {
       const canReadAsText = /\.(txt|md)$/i.test(input.file.name);
@@ -83,10 +101,10 @@ export class MockInterviewApi implements InterviewApi {
   }
 
   async createInterview(input: CreateInterviewInput): Promise<CreateInterviewResponse> {
-    await wait(350);
+    await this.wait(350);
     const id = `demo_${crypto.randomUUID().slice(0, 8)}`;
     const createdAt = new Date().toISOString();
-    const total = Math.min(input.options?.question_count ?? 3, sampleQuestions.length);
+    const total = INTERVIEW_QUESTION_COUNT;
     const session: MockSession = {
       input,
       started: false,
@@ -95,6 +113,7 @@ export class MockInterviewApi implements InterviewApi {
       questions: sampleQuestions.slice(0, total),
       events: [],
       subscribers: new Set(),
+      reviewPlanFailuresRemaining: this.failReviewPlanOnce ? 1 : 0,
       snapshot: {
         interview_id: id,
         status: "preparing",
@@ -121,14 +140,19 @@ export class MockInterviewApi implements InterviewApi {
   }
 
   async getInterview(id: string): Promise<InterviewSnapshot> {
-    await wait(100);
+    await this.wait(100);
     return structuredClone(this.requireSession(id).snapshot);
   }
 
   async submitAnswer(id: string, promptId: string, text: string): Promise<void> {
     const session = this.requireSession(id);
     const awaiting = session.snapshot.awaiting_answer;
-    if (!awaiting || awaiting.prompt_id !== promptId) throw new Error("当前问题已变化，请刷新后重试");
+    if (session.snapshot.qa_history.some((item) => item.prompt_id === promptId)) {
+      throw new InterviewApiError("这道题的回答已经提交，已为你同步最新进度。", "answer_already_submitted", 409);
+    }
+    if (!awaiting || awaiting.prompt_id !== promptId) {
+      throw new InterviewApiError("当前问题已变化，请同步最新进度后重试。", "prompt_mismatch", 409);
+    }
     if (!text.trim()) throw new Error("回答不能为空");
 
     session.snapshot.awaiting_answer = null;
@@ -142,7 +166,7 @@ export class MockInterviewApi implements InterviewApi {
     session.snapshot.progress.answered += 1;
     session.snapshot.updated_at = new Date().toISOString();
     void this.evaluateAnswerAndContinue(session, promptId, text.trim());
-    await wait(100);
+    await this.wait(100);
   }
 
   private async evaluateAnswerAndContinue(
@@ -150,7 +174,7 @@ export class MockInterviewApi implements InterviewApi {
     promptId: string,
     answer: string,
   ): Promise<void> {
-    await wait(500);
+    await this.wait(500);
 
     const score = Math.min(92, 68 + answer.length / 8);
     const scoreEvent: InterviewEventMap["score"] = {
@@ -188,7 +212,7 @@ export class MockInterviewApi implements InterviewApi {
       return;
     }
     void this.finishInterview(session);
-    await wait(100);
+    await this.wait(100);
   }
 
   async getReport(id: string): Promise<ReportResponse> {
@@ -199,8 +223,23 @@ export class MockInterviewApi implements InterviewApi {
 
   async getReviewPlan(id: string): Promise<ReviewPlanResponse> {
     const session = this.requireSession(id);
-    if (!session.reviewPlan) throw new Error("复习计划仍在生成中");
+    if (!session.reviewPlan) {
+      throw new InterviewApiError("复习计划生成失败，可以单独重试。", "review_plan_not_ready", 409);
+    }
     return structuredClone(session.reviewPlan);
+  }
+
+  async retryReviewPlan(id: string): Promise<ReviewPlanResponse> {
+    const session = this.requireSession(id);
+    if (session.reviewPlan) return structuredClone(session.reviewPlan);
+    await this.wait(350);
+    const reviewPlan = this.createReviewPlan(session);
+    session.reviewPlan = reviewPlan;
+    session.snapshot.review_plan_ready = true;
+    session.snapshot.status = "completed";
+    session.snapshot.stage = "review_plan";
+    this.emit(session, "review_plan", reviewPlan);
+    return structuredClone(reviewPlan);
   }
 
   async subscribe(id: string, options: SubscribeOptions): Promise<void> {
@@ -268,7 +307,7 @@ export class MockInterviewApi implements InterviewApi {
     for (const [stage, message] of stages) {
       session.snapshot.stage = stage;
       this.emit(session, "stage", { stage, message });
-      await wait(550);
+      await this.wait(550);
       if (stage === "jd_analysis") {
         session.snapshot.jd_analysis = {
           position: "高级研发工程师",
@@ -288,7 +327,7 @@ export class MockInterviewApi implements InterviewApi {
     }
     this.emit(session, "question_plan", {
       total_questions: session.questions.length,
-      distribution: { project: 1, debugging: 1, system_design: 1 },
+      distribution: { project: 5, debugging: 5, system_design: 5 },
     });
     await this.streamQuestion(session, session.questions[0]);
   }
@@ -318,7 +357,7 @@ export class MockInterviewApi implements InterviewApi {
     session.snapshot.status = "evaluating";
     session.snapshot.stage = "evaluation";
     this.emit(session, "stage", { stage: "evaluation", message: "正在综合你的回答生成评估" });
-    await wait(800);
+    await this.wait(800);
 
     const id = session.snapshot.interview_id;
     const createdAt = new Date().toISOString();
@@ -332,7 +371,18 @@ export class MockInterviewApi implements InterviewApi {
         dimension_scores: { 技术深度: 84, 问题分析: 88, 系统设计: 78, 表达沟通: 79 },
         strengths: ["能够从真实场景出发拆解问题", "排查路径有层次，具备工程判断力", "技术选型能说明基本取舍"],
         weaknesses: ["结果缺少量化数据支撑", "故障恢复与边界条件覆盖不足"],
-        detailed_review: [],
+        detailed_review: [
+          {
+            topic: "结果缺少量化数据支撑",
+            summary: "引用第 1、8、14 题：行动描述完整，但结果指标和失败前后对比仍可更具体。",
+            score: 76,
+          },
+          {
+            topic: "故障恢复与边界条件覆盖不足",
+            summary: "引用第 3、5、9 题：主流程设计清楚，仍需补充降级触发条件、数据修复和回滚验证。",
+            score: 74,
+          },
+        ],
         summary: "技术基础与工程实践达到高级研发岗位预期，建议强化架构题中的约束澄清、容量估算与容灾设计。",
         created_at: createdAt,
       },
@@ -344,11 +394,34 @@ export class MockInterviewApi implements InterviewApi {
     session.snapshot.status = "planning_review";
     session.snapshot.stage = "review_plan";
     this.emit(session, "stage", { stage: "review_plan", message: "正在整理针对性的复习计划" });
-    await wait(650);
-    const reviewPlan: ReviewPlanResponse = {
+    await this.wait(650);
+    if (session.reviewPlanFailuresRemaining > 0) {
+      session.reviewPlanFailuresRemaining -= 1;
+      session.snapshot.status = "completed";
+      session.snapshot.ended_reason = null;
+      this.emit(session, "warning", {
+        code: "review_plan_generation_failed",
+        message: "评估报告已完成，但复习计划生成失败，可在结果页单独重试。",
+      });
+      this.emit(session, "completed", { interview_id: id });
+      return;
+    }
+
+    const reviewPlan = this.createReviewPlan(session);
+    session.reviewPlan = reviewPlan;
+    session.snapshot.review_plan_ready = true;
+    this.emit(session, "review_plan", reviewPlan);
+    session.snapshot.status = "completed";
+    session.snapshot.ended_reason = null;
+    this.emit(session, "completed", { interview_id: id });
+  }
+
+  private createReviewPlan(session: MockSession): ReviewPlanResponse {
+    const createdAt = new Date().toISOString();
+    return {
       plan_markdown: "# 7 天复习计划\n\n围绕量化表达、性能诊断和高可用设计完成三轮训练。",
       plan: {
-        interview_id: id,
+        interview_id: session.snapshot.interview_id,
         weak_areas: ["量化表达", "容量估算", "故障恢复"],
         study_plan: [
           { day: 1, title: "重写项目案例", topics: ["STAR", "技术指标"], outcome: "完成 2 个可量化项目故事" },
@@ -364,11 +437,5 @@ export class MockInterviewApi implements InterviewApi {
         created_at: createdAt,
       },
     };
-    session.reviewPlan = reviewPlan;
-    session.snapshot.review_plan_ready = true;
-    this.emit(session, "review_plan", reviewPlan);
-    session.snapshot.status = "completed";
-    session.snapshot.ended_reason = null;
-    this.emit(session, "completed", { interview_id: id });
   }
 }

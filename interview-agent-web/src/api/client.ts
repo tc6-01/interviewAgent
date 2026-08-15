@@ -9,24 +9,11 @@ import type {
 } from "../types/api";
 import { consumeSseStream } from "./sse";
 import { MockInterviewApi } from "./mock";
+import { InterviewApiError } from "./errors";
 
 const configuredBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 const API_ROOT = `${configuredBase}/api/v1`;
 const TERMINAL_EVENTS = new Set(["completed", "terminated", "failed"]);
-
-export class InterviewApiError extends Error {
-  code: string;
-  status: number;
-  details?: Record<string, unknown>;
-
-  constructor(message: string, code: string, status: number, details?: Record<string, unknown>) {
-    super(message);
-    this.name = "InterviewApiError";
-    this.code = code;
-    this.status = status;
-    this.details = details;
-  }
-}
 
 export interface ParseDocumentInput {
   kind: "jd" | "resume";
@@ -51,6 +38,7 @@ export interface InterviewApi {
   quitInterview(id: string): Promise<void>;
   getReport(id: string): Promise<ReportResponse>;
   getReviewPlan(id: string): Promise<ReviewPlanResponse>;
+  retryReviewPlan(id: string): Promise<ReviewPlanResponse>;
   subscribe(id: string, options: SubscribeOptions): Promise<void>;
 }
 
@@ -86,7 +74,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   throw new InterviewApiError(message, code, response.status, details);
 }
 
-class HttpInterviewApi implements InterviewApi {
+export class HttpInterviewApi implements InterviewApi {
   readonly mode = "real" as const;
 
   async parseDocument(input: ParseDocumentInput): Promise<ParsedDocument> {
@@ -134,6 +122,13 @@ class HttpInterviewApi implements InterviewApi {
 
   getReviewPlan(id: string): Promise<ReviewPlanResponse> {
     return request<ReviewPlanResponse>(`/interviews/${encodeURIComponent(id)}/review-plan`);
+  }
+
+  retryReviewPlan(id: string): Promise<ReviewPlanResponse> {
+    return request<ReviewPlanResponse>(`/interviews/${encodeURIComponent(id)}/review-plan/retry`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   }
 
   async subscribe(id: string, options: SubscribeOptions): Promise<void> {
