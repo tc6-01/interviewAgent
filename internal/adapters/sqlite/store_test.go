@@ -78,7 +78,7 @@ func TestSubjectBoundaryMigrationUpgradesExistingDatabase(t *testing.T) {
 	if resultSubject != "subject-a" || report != `{"score":88}` {
 		t.Fatalf("migrated result subject=%q report=%q", resultSubject, report)
 	}
-	questions, err := store.ListQuestions(ctx, "user:subject-a")
+	questions, err := store.ListUserQuestions(ctx, "subject-a")
 	if err != nil || len(questions) != 1 || questions[0].ID != "question-a" {
 		t.Fatalf("migrated questions=%#v err=%v", questions, err)
 	}
@@ -161,7 +161,7 @@ func TestQuestionBankIdempotencyReplacementAndIsolation(t *testing.T) {
 			t.Fatalf("ReplaceUserBank(%s) = %v, %v", subjectID, changed, err)
 		}
 	}
-	aQuestions, err := store.ListQuestions(ctx, "user:subject-a")
+	aQuestions, err := store.ListUserQuestions(ctx, "subject-a")
 	if err != nil || len(aQuestions) != 1 || aQuestions[0].Text != "subject-a question" {
 		t.Fatalf("subject-a questions = %#v, %v", aQuestions, err)
 	}
@@ -171,19 +171,19 @@ func TestQuestionBankIdempotencyReplacementAndIsolation(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("ReplaceUserBank changed = %v, %v", changed, err)
 	}
-	aQuestions, _ = store.ListQuestions(ctx, "user:subject-a")
-	bQuestions, _ := store.ListQuestions(ctx, "user:subject-b")
+	aQuestions, _ = store.ListUserQuestions(ctx, "subject-a")
+	bQuestions, _ := store.ListUserQuestions(ctx, "subject-b")
 	if len(aQuestions) != 1 || aQuestions[0].Text != "new design question" || len(bQuestions) != 1 || bQuestions[0].Text != "subject-b question" {
 		t.Fatalf("replacement leaked: a=%#v b=%#v", aQuestions, bQuestions)
 	}
 	if err := store.DeleteQuestionBank(ctx, "subject-a", "private.json"); err != nil {
 		t.Fatalf("DeleteQuestionBank: %v", err)
 	}
-	aQuestions, _ = store.ListQuestions(ctx, "user:subject-a")
+	aQuestions, _ = store.ListUserQuestions(ctx, "subject-a")
 	if len(aQuestions) != 0 {
 		t.Fatalf("deleted questions = %#v, want empty", aQuestions)
 	}
-	if bQuestions, _ = store.ListQuestions(ctx, "user:subject-b"); len(bQuestions) != 1 {
+	if bQuestions, _ = store.ListUserQuestions(ctx, "subject-b"); len(bQuestions) != 1 {
 		t.Fatalf("delete crossed subject boundary: %#v", bQuestions)
 	}
 }

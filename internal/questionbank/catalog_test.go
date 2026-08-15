@@ -44,8 +44,15 @@ func TestBuiltinAssetSchemaNoiseAndIdempotentStartup(t *testing.T) {
 	itemsSchema := questionsSchema["items"].(map[string]any)
 	questionProperties := itemsSchema["properties"].(map[string]any)
 	typeSchema := questionProperties["type"].(map[string]any)
-	if enum, ok := typeSchema["enum"].([]any); !ok || len(enum) != 3 {
+	enum, ok := typeSchema["enum"].([]any)
+	if !ok || len(enum) != 3 {
 		t.Fatalf("schema question type enum = %#v, want three values", typeSchema["enum"])
+	}
+	wantTypes := map[string]bool{"basic": true, "experience": true, "design": true}
+	for _, value := range enum {
+		if typeName, ok := value.(string); !ok || !wantTypes[typeName] {
+			t.Fatalf("schema question type enum = %#v, want basic/experience/design", enum)
+		}
 	}
 
 	ctx := context.Background()
@@ -225,6 +232,58 @@ func TestConcurrentReplaceAndDeleteCannotPublishStaleScope(t *testing.T) {
 	}
 }
 
+func TestConcurrentReplacementsCannotPublishStaleScope(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "interview.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	blocking := &captureListRepository{
+		Repository:  store,
+		targetScope: "user:subject-a",
+		captured:    make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	index := bm25.New()
+	catalog, err := NewCatalog(blocking, index, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := []byte(`{"questions":[{"id":"first","type":"basic","topic":"旧题","text":"第一版问题","source":"private"}]}`)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := catalog.ReplaceUserBank(ctx, "subject-a", "private.json", first)
+		firstDone <- err
+	}()
+	<-blocking.captured
+
+	second := []byte(`{"questions":[{"id":"second","type":"design","topic":"新题","text":"第二版最终问题","source":"private"}]}`)
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := catalog.ReplaceUserBank(ctx, "subject-a", "private.json", second)
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		close(blocking.release)
+		<-firstDone
+		t.Fatalf("second replacement completed before the first snapshot publication: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(blocking.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first ReplaceUserBank: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second ReplaceUserBank: %v", err)
+	}
+	hits, err := index.Search(ctx, domain.SearchRequest{Scopes: []string{"user:subject-a"}, Query: "第二版 最终", Limit: 5})
+	if err != nil || len(hits) != 1 || !strings.Contains(hits[0].Question.Text, "第二版") {
+		t.Fatalf("latest replacement is not the published snapshot: hits=%#v err=%v", hits, err)
+	}
+}
+
 func TestLoadAllRebuildsPersistedUserScopesAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "interview.db")
@@ -354,8 +413,9 @@ type captureListRepository struct {
 	didCapture  bool
 }
 
-func (r *captureListRepository) ListQuestions(ctx context.Context, scope string) ([]domain.Question, error) {
-	questions, err := r.Repository.ListQuestions(ctx, scope)
+func (r *captureListRepository) ListUserQuestions(ctx context.Context, subjectID string) ([]domain.Question, error) {
+	questions, err := r.Repository.ListUserQuestions(ctx, subjectID)
+	scope := "user:" + subjectID
 	if err != nil || scope != r.targetScope {
 		return questions, err
 	}

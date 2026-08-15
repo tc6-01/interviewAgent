@@ -25,6 +25,10 @@ questionbank-generate:
 
 questionbank-validate:
 	go test ./internal/questionbank -run '^TestBuiltinAsset'
+	@tmp="$$(mktemp "$${TMPDIR:-/tmp}/interview-questionbank.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT; \
+	go run ./cmd/questionbank-gen -output "$$tmp"; \
+	cmp -s "$$tmp" internal/questionbank/assets/go_v1.json || { echo "builtin question bank is stale; run make questionbank-generate"; exit 1; }
 
 # Legacy CLI requires its historical Redis/MySQL/Milvus configuration.
 legacy-run:

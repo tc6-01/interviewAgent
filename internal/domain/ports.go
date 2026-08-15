@@ -105,8 +105,9 @@ type Repository interface {
 	EnsureBuiltinBank(context.Context, QuestionBank, []Question) (bool, error)
 	ReplaceUserBank(context.Context, QuestionBank, []Question) (bool, error)
 	DeleteQuestionBank(context.Context, string, string) error
-	ListQuestions(context.Context, string) ([]Question, error)
-	ListQuestionScopes(context.Context, string) ([]string, error)
+	ListBuiltinQuestions(context.Context) ([]Question, error)
+	ListUserQuestions(context.Context, string) ([]Question, error)
+	ListUserQuestionSubjects(context.Context) ([]string, error)
 
 	CreateInterview(context.Context, Interview) error
 	SaveInterviewResult(context.Context, string, InterviewResult) error

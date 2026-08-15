@@ -253,7 +253,19 @@ func (s *Store) DeleteQuestionBank(ctx context.Context, subjectID, filename stri
 	return nil
 }
 
-func (s *Store) ListQuestions(ctx context.Context, scope string) ([]domain.Question, error) {
+func (s *Store) ListBuiltinQuestions(ctx context.Context) ([]domain.Question, error) {
+	return s.listQuestions(ctx, "builtin")
+}
+
+func (s *Store) ListUserQuestions(ctx context.Context, subjectID string) ([]domain.Question, error) {
+	subjectID = strings.TrimSpace(subjectID)
+	if subjectID == "" {
+		return nil, fmt.Errorf("sqlite: subject id is required")
+	}
+	return s.listQuestions(ctx, "user:"+subjectID)
+}
+
+func (s *Store) listQuestions(ctx context.Context, scope string) ([]domain.Question, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT q.id, q.bank_id, q.type, q.topic, q.question_text, q.answer_text, q.source, q.created_at, q.updated_at
 		FROM questions q JOIN question_banks b ON b.id=q.bank_id WHERE b.scope=? ORDER BY q.id`, scope)
 	if err != nil {
@@ -277,24 +289,25 @@ func (s *Store) ListQuestions(ctx context.Context, scope string) ([]domain.Quest
 	return questions, nil
 }
 
-func (s *Store) ListQuestionScopes(ctx context.Context, prefix string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT scope FROM question_banks WHERE scope LIKE ? ORDER BY scope`, prefix+"%")
+func (s *Store) ListUserQuestionSubjects(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT subject_id FROM question_banks
+		WHERE subject_id IS NOT NULL AND scope = ('user:' || subject_id) ORDER BY subject_id`)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: list question scopes: %w", err)
+		return nil, fmt.Errorf("sqlite: list user question subjects: %w", err)
 	}
 	defer rows.Close()
-	var scopes []string
+	var subjectIDs []string
 	for rows.Next() {
-		var scope string
-		if err := rows.Scan(&scope); err != nil {
-			return nil, fmt.Errorf("sqlite: scan question scope: %w", err)
+		var subjectID string
+		if err := rows.Scan(&subjectID); err != nil {
+			return nil, fmt.Errorf("sqlite: scan user question subject: %w", err)
 		}
-		scopes = append(scopes, scope)
+		subjectIDs = append(subjectIDs, subjectID)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: iterate question scopes: %w", err)
+		return nil, fmt.Errorf("sqlite: iterate user question subjects: %w", err)
 	}
-	return scopes, nil
+	return subjectIDs, nil
 }
 
 func (s *Store) CreateInterview(ctx context.Context, interview domain.Interview) error {

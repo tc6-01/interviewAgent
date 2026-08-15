@@ -46,7 +46,7 @@ func (c *Catalog) LoadBuiltin(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	questions, err := c.repository.ListQuestions(ctx, "builtin")
+	questions, err := c.repository.ListBuiltinQuestions(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -63,14 +63,15 @@ func (c *Catalog) LoadAll(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	scopes, err := c.repository.ListQuestionScopes(ctx, "user:")
+	subjectIDs, err := c.repository.ListUserQuestionSubjects(ctx)
 	if err != nil {
 		return false, err
 	}
-	for _, scope := range scopes {
+	for _, subjectID := range subjectIDs {
+		scope := "user:" + subjectID
 		lock := c.scopeLock(scope)
 		lock.Lock()
-		questions, err := c.repository.ListQuestions(ctx, scope)
+		questions, err := c.repository.ListUserQuestions(ctx, subjectID)
 		if err != nil {
 			lock.Unlock()
 			return false, err
@@ -156,7 +157,7 @@ func (c *Catalog) scopeLock(scope string) *sync.Mutex {
 
 func (c *Catalog) rebuildUserScope(ctx context.Context, subjectID string) error {
 	scope := "user:" + subjectID
-	questions, err := c.repository.ListQuestions(ctx, scope)
+	questions, err := c.repository.ListUserQuestions(ctx, subjectID)
 	if err != nil {
 		return err
 	}
