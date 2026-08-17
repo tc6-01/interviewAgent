@@ -34,7 +34,7 @@ Commit message 使用 [Conventional Commits](https://www.conventionalcommits.org
 ### 代码风格
 
 - Go 代码使用 `gofmt` 格式化，遵循标准 Go 项目惯例。
-- 默认服务必须保持 `httpapi → session → graph/agent → domain interfaces → adapters` 的单向依赖；基础设施实现只在 `internal/bootstrap` 装配。
+- 默认服务必须保持 `httpapi → session → workflow → core/agent → domain interfaces` 的单向业务依赖；`core/graph` 只负责内向装配检查，基础设施实现只在 `internal/bootstrap` 装配。
 - 默认启动路径不得依赖 Redis、MySQL、Milvus 或 Embedding 服务。
 - 前端代码（`interview-agent-web/`）遵循目录内既有的组件与命名风格。
 - 新增功能请尽量附带测试。
@@ -76,7 +76,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 ### Code Style
 
 - Go code must be `gofmt`-formatted and follow standard Go project conventions.
-- Keep the default service dependency direction `httpapi → session → graph/agent → domain interfaces → adapters`; wire infrastructure only in `internal/bootstrap`.
+- Keep the default business dependency direction `httpapi → session → workflow → core/agent → domain interfaces`; `core/graph` remains an inward-facing assembly check, and infrastructure is wired only in `internal/bootstrap`.
 - Do not add Redis, MySQL, Milvus, or embedding services to the default startup path.
 - Frontend code (`interview-agent-web/`) should follow the existing component and naming style.
 - Please add tests for new functionality where practical.

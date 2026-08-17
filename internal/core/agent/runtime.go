@@ -29,3 +29,17 @@ func (r *Runtime) Checks(ctx context.Context) []domain.CheckResult {
 		{Name: "agent_assembly"},
 	}
 }
+
+func (r *Runtime) Complete(ctx context.Context, request domain.LLMRequest) (domain.LLMResponse, error) {
+	if r == nil || r.llm == nil {
+		return domain.LLMResponse{}, fmt.Errorf("agent: runtime is not initialized")
+	}
+	return r.llm.Complete(ctx, request)
+}
+
+func (r *Runtime) Metrics() domain.LLMMetrics {
+	if r == nil || r.llm == nil {
+		return domain.LLMMetrics{}
+	}
+	return r.llm.Metrics()
+}

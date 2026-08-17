@@ -145,7 +145,21 @@ func (a *actor) run() {
 
 func (a *actor) prepare() error {
 	a.emit("stage", map[string]any{"stage": "jd_analysis", "message": "analyzing job description"}, true)
+	if a.input.Direction != nil {
+		a.snapshotState.Direction = a.input.Direction
+		a.snapshotState.JDAnalysis = &JDAnalysis{
+			Position: a.input.Direction.JDAnalysis.Position, Company: a.input.Direction.JDAnalysis.Company,
+			ExperienceLevel: a.input.Direction.JDAnalysis.ExperienceLevel, RequiredSkills: a.input.Direction.JDAnalysis.RequiredSkills,
+			Responsibilities: a.input.Direction.JDAnalysis.Responsibilities, KeyTopics: a.input.Direction.JDAnalysis.KeyTopics,
+		}
+		a.emit("jd_analysis", a.snapshotState.JDAnalysis, true)
+	}
 	a.emit("stage", map[string]any{"stage": "resume_match", "message": "matching resume"}, true)
+	if a.input.Direction != nil {
+		match := a.input.Direction.ResumeMatch
+		a.snapshotState.MatchResult = &match
+		a.emit("resume_match", a.snapshotState.MatchResult, true)
+	}
 	a.emit("stage", map[string]any{"stage": "question_plan", "message": "planning interview"}, true)
 	questions, err := a.engine.Prepare(a.ctx, a.input)
 	if err != nil {
@@ -202,20 +216,37 @@ func (a *actor) acceptAnswer(request AnswerRequest) (Question, error) {
 func (a *actor) processAnswer(request AnswerRequest, question Question) {
 	started := time.Now()
 	score, err := a.engine.Score(a.ctx, cloneSnapshot(a.snapshotState), question, request.Text)
+	degraded := err != nil
 	if err != nil {
 		a.emit("warning", map[string]any{"code": "score_failed", "message": "answer scoring degraded"}, true)
 		score = Score{Feedback: "score unavailable"}
 	}
 	a.snapshotState.QAHistory = append(a.snapshotState.QAHistory, QARecord{
-		PromptID: question.PromptID, Number: question.Number, Kind: question.Kind,
+		PromptID: question.PromptID, Number: question.Number, Kind: question.Kind, Type: question.Type,
 		Question: question.Content, Answer: request.Text, Score: score.Value, Feedback: score.Feedback,
+		KeyPointsHit: score.KeyPointsHit, KeyPointsMissed: score.KeyPointsMissed, ScoreDegraded: degraded,
 		AnsweredAt: time.Now().UTC(),
 	})
-	a.snapshotState.Progress.Answered = len(a.snapshotState.QAHistory)
-	a.emit("score", map[string]any{"prompt_id": request.PromptID, "score": score.Value, "feedback": score.Feedback}, true)
+	if question.Kind == "primary" {
+		a.snapshotState.Progress.Answered++
+	}
+	a.emit("score", map[string]any{
+		"prompt_id": request.PromptID, "score": score.Value, "feedback": score.Feedback,
+		"key_points_hit": score.KeyPointsHit, "key_points_missed": score.KeyPointsMissed, "is_follow_up": question.Kind == "followup",
+	}, true)
+	if question.Kind == "primary" && !degraded && score.FollowUpNeeded {
+		followUp, followErr := a.engine.FollowUp(a.ctx, cloneSnapshot(a.snapshotState), question, request.Text, score)
+		if followErr != nil {
+			a.emit("warning", map[string]any{"code": "follow_up_failed", "message": "follow-up generation degraded"}, true)
+		} else if followUp != nil {
+			a.ask(*followUp)
+			return
+		}
+	}
 	if a.snapshotState.Progress.Answered < len(a.questions) {
-		a.ask(a.questions[a.snapshotState.Progress.Answered])
-		a.logger.Info("interview round ready", "interview_id", a.snapshotState.InterviewID, "question_no", a.snapshotState.Progress.Answered+1, "round_latency_ms", time.Since(started).Milliseconds())
+		next := a.questions[a.snapshotState.Progress.Answered]
+		a.ask(next)
+		a.logger.Info("interview round ready", "interview_id", a.snapshotState.InterviewID, "question_no", next.Number, "round_latency_ms", time.Since(started).Milliseconds())
 		return
 	}
 	a.complete()
@@ -237,10 +268,15 @@ func (a *actor) complete() {
 	report, err := a.engine.Report(a.ctx, cloneSnapshot(a.snapshotState))
 	if err != nil {
 		a.snapshotState.ReportStatus = ArtifactFailed
-		a.fail("llm_failure", err)
+		a.snapshotState.Status = StatusCompleted
+		a.snapshotState.Stage = "completed"
+		a.emit("warning", map[string]any{"code": "report_generation_failed", "message": "report generation failed; retry is available"}, true)
+		a.emit("completed", map[string]any{"status": StatusCompleted, "interview_id": a.snapshotState.InterviewID}, true)
+		a.logger.Error("interview report failed", "interview_id", a.snapshotState.InterviewID, "error_type", "generation")
 		return
 	}
 	a.snapshotState.Report = report.Value
+	a.snapshotState.ReportMarkdown = report.Markdown
 	a.snapshotState.ReportStatus = ArtifactReady
 	a.snapshotState.ReportReady = true
 	a.emit("report", map[string]any{"report_markdown": report.Markdown, "report": json.RawMessage(report.Value)}, true)
@@ -252,17 +288,22 @@ func (a *actor) complete() {
 	plan, err := a.engine.ReviewPlan(a.ctx, cloneSnapshot(a.snapshotState))
 	if err != nil {
 		a.snapshotState.ReviewPlanStatus = ArtifactFailed
-		a.fail("llm_failure", err)
+		a.snapshotState.Status = StatusCompleted
+		a.snapshotState.Stage = "completed"
+		a.emit("warning", map[string]any{"code": "review_plan_generation_failed", "message": "review plan generation failed; retry is available"}, true)
+		a.emit("completed", map[string]any{"status": StatusCompleted, "interview_id": a.snapshotState.InterviewID}, true)
+		a.logger.Error("interview review plan failed", "interview_id", a.snapshotState.InterviewID, "error_type", "generation")
 		return
 	}
 	a.snapshotState.ReviewPlan = plan.Value
+	a.snapshotState.ReviewPlanMarkdown = plan.Markdown
 	a.snapshotState.ReviewPlanStatus = ArtifactReady
 	a.snapshotState.ReviewPlanReady = true
 	a.emit("review_plan", map[string]any{"plan_markdown": plan.Markdown, "plan": json.RawMessage(plan.Value)}, true)
 	a.snapshotState.Status = StatusCompleted
 	a.snapshotState.Stage = "completed"
 	a.snapshotState.AwaitingAnswer = nil
-	a.emit("completed", map[string]any{"status": StatusCompleted}, true)
+	a.emit("completed", map[string]any{"status": StatusCompleted, "interview_id": a.snapshotState.InterviewID}, true)
 }
 
 func (a *actor) terminate(reason string) {
@@ -434,4 +475,15 @@ func resetTimer(timer *time.Timer, duration time.Duration) {
 		}
 	}
 	timer.Reset(duration)
+}
+
+func directionMatchScore(direction Direction) float64 {
+	if len(direction.Gaps) == 0 {
+		return 100
+	}
+	total := len(direction.MatchedSkills) + len(direction.Gaps)
+	if total == 0 {
+		return 0
+	}
+	return float64(len(direction.MatchedSkills)) / float64(total) * 100
 }

@@ -40,9 +40,10 @@ internal/httpapi
         │
         ▼
 internal/session
-        │
-        ▼
-internal/core/graph → internal/core/agent
+        ├──────────────► internal/workflow（Eino DAG）
+        │                         │
+        ▼                         ▼
+internal/core/graph       internal/core/agent
         │
         ▼
 internal/domain（接口）
@@ -64,8 +65,8 @@ internal/adapters/{sqlite,bm25,llm/openai}
 | `LLM_MODEL` | 否 | `qwen-plus` | 默认模型 |
 | `HTTP_ADDR` | 否 | `:9090` | HTTP 监听地址 |
 | `SQLITE_PATH` | 否 | `data/interview.db` | SQLite 文件；测试可用 `:memory:` |
-| `LLM_TIMEOUT` | 否 | `60s` | 后续业务请求超时 |
-| `LLM_MAX_CONCURRENCY` | 否 | `4` | 后续全局 LLM 并发上限 |
+| `LLM_TIMEOUT` | 否 | `60s` | 单次模型请求超时 |
+| `LLM_MAX_CONCURRENCY` | 否 | `4` | 进程级 LLM 并发上限 |
 | `SHUTDOWN_TIMEOUT` | 否 | `10s` | 优雅关停超时 |
 
 `.env.example` 还列出了旧增强驱动变量，它们默认为空，且不会被 `cmd/interview-server` 读取。
@@ -85,6 +86,39 @@ go test ./...
 ```
 
 测试脚手架包含配置校验、SQLite 初始化、健康/就绪语义、完整轻量装配和默认依赖图检查。
+
+内置 Go 题库已离线清洗为结构化 JSON，启动时按版本和 SHA-256 幂等装载到 SQLite，并重建进程内 `builtin` BM25 scope。题库维护命令：
+
+```bash
+make questionbank-generate  # 从迁移源生成结构化资产
+make questionbank-validate  # 校验 schema、题型枚举与推广噪声
+```
+
+用户题库使用独立的 `user:{subject_id}` scope，按主体、文件名和内容 SHA-256 幂等替换；删除时同步更新 SQLite 与进程内索引。默认检索不依赖向量服务，缺题通过显式 LLM fallback 接口补齐。
+
+## MVP API 闭环
+
+默认 HTTP 服务已经接通 M1/M3/M4 主流程：
+
+```text
+POST  /api/v1/documents/parse
+POST  /api/v1/interview-directions
+PATCH /api/v1/interview-directions/{id}
+POST  /api/v1/interview-directions/{id}/confirm
+POST  /api/v1/interviews
+GET   /api/v1/interviews/{id}/events
+POST  /api/v1/interviews/{id}/answers
+POST  /api/v1/interviews/{id}/quit
+GET   /api/v1/interviews/{id}/report
+GET   /api/v1/interviews/{id}/review-plan
+POST  /api/v1/interviews/{id}/review-plan/retry
+```
+
+方向生成结果会做结构校验，失败时最多进行一次 JSON 修复；确认后的版本随面试快照持久化。面试固定 15 道主问题，低分回答可触发追问，追问不占用主问题名额。单题评分或追问失败只产生降级警告，不会中断整场。
+
+报告会把弱项关联到失分题；高分候选人会得到进阶方向。复习资源只保留经稳定域名校验的 HTTPS URL，无法确认的链接会被省略。报告已完成而复习计划失败时，可调用独立重试端点；首次返回 `202`，并发重复重试返回 `409`。
+
+LLM Gateway 在进程内统一执行并发 semaphore、单次超时和有限重试：仅网络错误、`429` 与 `5xx` 重试，其他 `4xx` 不重试。指标记录请求、重试、超时、限流、token usage 和最大并发，不记录完整 JD、简历、回答或密钥。
 
 ## Docker 与增强部署
 

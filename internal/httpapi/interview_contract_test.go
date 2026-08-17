@@ -115,7 +115,9 @@ func TestInterviewHTTPAndSSEContract(t *testing.T) {
 }
 
 func TestInterviewHTTPQuitAndTimeout(t *testing.T) {
-	server, _ := newInterviewTestServer(t, 30*time.Millisecond)
+	// Keep enough margin for SQLite migrations and direction persistence on
+	// slower CI runners while still exercising the actor idle-timeout branch.
+	server, _ := newInterviewTestServer(t, 150*time.Millisecond)
 	client := server.Client()
 
 	quit := createInterviewHTTP(t, client, server.URL, "quit-subject")

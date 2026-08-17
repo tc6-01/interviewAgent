@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,12 +19,64 @@ type fakeGraph struct{}
 func (fakeGraph) Checks(context.Context) []domain.CheckResult { return nil }
 
 type memoryRepository struct {
-	mu       sync.Mutex
-	sessions map[string]Snapshot
+	mu         sync.Mutex
+	sessions   map[string]Snapshot
+	directions map[string]Direction
 }
 
 func newMemoryRepository() *memoryRepository {
-	return &memoryRepository{sessions: make(map[string]Snapshot)}
+	return &memoryRepository{sessions: make(map[string]Snapshot), directions: make(map[string]Direction)}
+}
+
+func (r *memoryRepository) CreateDirection(_ context.Context, direction Direction) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.directions[direction.ID] = direction
+	return nil
+}
+
+func (r *memoryRepository) GetDirection(_ context.Context, subjectID, directionID string) (Direction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	direction, ok := r.directions[directionID]
+	if !ok || direction.SubjectID != subjectID {
+		return Direction{}, NotFoundError{}
+	}
+	return direction, nil
+}
+
+func (r *memoryRepository) UpdateDirection(_ context.Context, subjectID, directionID string, patch DirectionPatch) (Direction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	direction, ok := r.directions[directionID]
+	if !ok || direction.SubjectID != subjectID {
+		return Direction{}, NotFoundError{}
+	}
+	if direction.Version != patch.ExpectedVersion || direction.Status != DirectionDraft {
+		return Direction{}, &ConflictError{Code: "direction_version_conflict", Message: "conflict"}
+	}
+	direction.Version++
+	direction.Position, direction.ExperienceLevel = patch.Position, patch.ExperienceLevel
+	direction.FocusAreas, direction.MatchedSkills, direction.Gaps = patch.FocusAreas, patch.MatchedSkills, patch.Gaps
+	direction.JDAnalysis, direction.ResumeMatch = patch.JDAnalysis, patch.ResumeMatch
+	r.directions[directionID] = direction
+	return direction, nil
+}
+
+func (r *memoryRepository) ConfirmDirection(_ context.Context, subjectID, directionID string, expectedVersion int) (Direction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	direction, ok := r.directions[directionID]
+	if !ok || direction.SubjectID != subjectID {
+		return Direction{}, NotFoundError{}
+	}
+	if direction.Version != expectedVersion || direction.Status != DirectionDraft {
+		return Direction{}, &ConflictError{Code: "direction_confirm_conflict", Message: "conflict"}
+	}
+	now := time.Now().UTC()
+	direction.Status, direction.ConfirmedAt = DirectionConfirmed, &now
+	r.directions[directionID] = direction
+	return direction, nil
 }
 
 func (r *memoryRepository) CreateSession(_ context.Context, snapshot Snapshot) error {
@@ -67,6 +120,37 @@ func (r *memoryRepository) FailActiveSessions(_ context.Context, reason string) 
 		r.sessions[id] = snapshot
 	}
 	return nil
+}
+
+func TestManagerRejectsEditedDirectionEvidenceOutsideVerifiedResumeQuotes(t *testing.T) {
+	repository := newMemoryRepository()
+	manager := newTestManager(t, repository, time.Minute)
+	direction, err := manager.GenerateDirection(context.Background(), "subject-direction", "backend jd", "backend development")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalidMatch := direction.ResumeMatch
+	invalidMatch.SkillMatch = append([]SkillMatch(nil), direction.ResumeMatch.SkillMatch...)
+	invalidMatch.SkillMatch[0].Evidence = "invented Kubernetes platform ownership"
+	patch := DirectionPatch{
+		ExpectedVersion: direction.Version,
+		Position:        direction.Position, ExperienceLevel: direction.ExperienceLevel,
+		FocusAreas: direction.FocusAreas, MatchedSkills: direction.MatchedSkills, Gaps: direction.Gaps,
+		JDAnalysis: direction.JDAnalysis, ResumeMatch: invalidMatch,
+	}
+	if _, err := manager.UpdateDirection(context.Background(), direction.SubjectID, direction.ID, patch); err == nil || !strings.Contains(err.Error(), "verified resume quote") {
+		t.Fatalf("UpdateDirection() error = %v, want verified evidence rejection", err)
+	}
+
+	patch.ResumeMatch = direction.ResumeMatch
+	updated, err := manager.UpdateDirection(context.Background(), direction.SubjectID, direction.ID, patch)
+	if err != nil {
+		t.Fatalf("UpdateDirection() with original evidence error = %v", err)
+	}
+	if updated.Version != direction.Version+1 || updated.ResumeMatch.SkillMatch[0].Evidence != direction.ResumeMatch.SkillMatch[0].Evidence {
+		t.Fatalf("updated direction = %#v", updated)
+	}
 }
 
 func TestManagerCompletesFifteenQuestionsAndReplaysAuthoritativeEvents(t *testing.T) {

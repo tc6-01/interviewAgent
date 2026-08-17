@@ -12,8 +12,10 @@ import (
 	coreagent "interview-agent/internal/core/agent"
 	coregraph "interview-agent/internal/core/graph"
 	"interview-agent/internal/httpapi"
+	"interview-agent/internal/questionbank"
 	"interview-agent/internal/runtimeconfig"
 	"interview-agent/internal/session"
+	"interview-agent/internal/workflow"
 )
 
 // App is the composition root. Concrete adapters are only wired here; inner
@@ -39,6 +41,13 @@ func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*A
 	}
 
 	index := bm25.New()
+	catalog, err := questionbank.NewCatalog(store, index, nil)
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := catalog.LoadAll(ctx); err != nil {
+		return fail(err)
+	}
 	llm, err := llmadapter.New(cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout, cfg.LLMConcurrency)
 	if err != nil {
 		return fail(err)
@@ -51,7 +60,11 @@ func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*A
 	if err != nil {
 		return fail(err)
 	}
-	sessions, err := session.NewManager(graphRuntime, store, session.WithLogger(logger))
+	workflowEngine, err := workflow.New(agentRuntime, store, index)
+	if err != nil {
+		return fail(err)
+	}
+	sessions, err := session.NewManager(graphRuntime, store, session.WithEngine(workflowEngine), session.WithLogger(logger))
 	if err != nil {
 		return fail(err)
 	}

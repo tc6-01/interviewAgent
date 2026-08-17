@@ -30,6 +30,7 @@ func TestSessionSnapshotPersistsAndInterruptedSessionIsFailedOnStartupCleanup(t 
 		t.Fatal(err)
 	}
 	snapshot.Report = json.RawMessage(`{"overall_score":80}`)
+	snapshot.ReportMarkdown = "# persisted report"
 	snapshot.ReportStatus = session.ArtifactReady
 	snapshot.ReportReady = true
 	if err := store.SaveSession(ctx, snapshot); err != nil {
@@ -48,8 +49,15 @@ func TestSessionSnapshotPersistsAndInterruptedSessionIsFailedOnStartupCleanup(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored.SubjectID != snapshot.SubjectID || restored.LastEventID != 7 || string(restored.Report) != string(snapshot.Report) {
+	if restored.SubjectID != snapshot.SubjectID || restored.LastEventID != 7 || string(restored.Report) != string(snapshot.Report) || restored.ReportMarkdown != "# persisted report" {
 		t.Fatalf("restored snapshot = %#v", restored)
+	}
+	interview, result, err := store.GetInterview(ctx, snapshot.SubjectID, snapshot.InterviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interview.Status != string(snapshot.Status) || string(result.ReportJSON) != string(snapshot.Report) {
+		t.Fatalf("normalized mirror interview=%#v result=%s", interview, result.ReportJSON)
 	}
 	if err := store.FailActiveSessions(ctx, "server_restart"); err != nil {
 		t.Fatal(err)
