@@ -20,11 +20,13 @@ func (s *Store) CreateDirection(ctx context.Context, direction session.Direction
 	focusAreas, _ := json.Marshal(direction.FocusAreas)
 	matchedSkills, _ := json.Marshal(direction.MatchedSkills)
 	gaps, _ := json.Marshal(direction.Gaps)
+	jdAnalysis, _ := json.Marshal(direction.JDAnalysis)
+	resumeMatch, _ := json.Marshal(direction.ResumeMatch)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO interview_directions
-		(id, subject_id, version, status, position, experience_level, focus_areas_json, matched_skills_json, gaps_json, source_sha256, confirmed_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+		(id, subject_id, version, status, position, experience_level, focus_areas_json, matched_skills_json, gaps_json, jd_analysis_json, resume_match_json, source_sha256, confirmed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
 		direction.ID, direction.SubjectID, direction.Version, direction.Status, direction.Position, direction.ExperienceLevel,
-		focusAreas, matchedSkills, gaps, direction.SourceSHA256, direction.CreatedAt.Format(time.RFC3339Nano), direction.UpdatedAt.Format(time.RFC3339Nano))
+		focusAreas, matchedSkills, gaps, jdAnalysis, resumeMatch, direction.SourceSHA256, direction.CreatedAt.Format(time.RFC3339Nano), direction.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("sqlite: create direction: %w", err)
 	}
@@ -33,13 +35,13 @@ func (s *Store) CreateDirection(ctx context.Context, direction session.Direction
 
 func (s *Store) GetDirection(ctx context.Context, subjectID, directionID string) (session.Direction, error) {
 	var direction session.Direction
-	var focusAreas, matchedSkills, gaps, createdAt, updatedAt string
+	var focusAreas, matchedSkills, gaps, jdAnalysis, resumeMatch, createdAt, updatedAt string
 	var confirmedAt sql.NullString
 	err := s.db.QueryRowContext(ctx, `SELECT id, subject_id, version, status, position, experience_level,
-		focus_areas_json, matched_skills_json, gaps_json, source_sha256, confirmed_at, created_at, updated_at
+		focus_areas_json, matched_skills_json, gaps_json, jd_analysis_json, resume_match_json, source_sha256, confirmed_at, created_at, updated_at
 		FROM interview_directions WHERE id=? AND subject_id=?`, directionID, subjectID).Scan(
 		&direction.ID, &direction.SubjectID, &direction.Version, &direction.Status, &direction.Position, &direction.ExperienceLevel,
-		&focusAreas, &matchedSkills, &gaps, &direction.SourceSHA256, &confirmedAt, &createdAt, &updatedAt)
+		&focusAreas, &matchedSkills, &gaps, &jdAnalysis, &resumeMatch, &direction.SourceSHA256, &confirmedAt, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return session.Direction{}, session.NotFoundError{}
 	}
@@ -55,6 +57,12 @@ func (s *Store) GetDirection(ctx context.Context, subjectID, directionID string)
 	if err := json.Unmarshal([]byte(gaps), &direction.Gaps); err != nil {
 		return session.Direction{}, fmt.Errorf("sqlite: decode direction gaps: %w", err)
 	}
+	if err := json.Unmarshal([]byte(jdAnalysis), &direction.JDAnalysis); err != nil {
+		return session.Direction{}, fmt.Errorf("sqlite: decode jd analysis: %w", err)
+	}
+	if err := json.Unmarshal([]byte(resumeMatch), &direction.ResumeMatch); err != nil {
+		return session.Direction{}, fmt.Errorf("sqlite: decode resume match: %w", err)
+	}
 	direction.CreatedAt = parseSessionTime(createdAt)
 	direction.UpdatedAt = parseSessionTime(updatedAt)
 	if confirmedAt.Valid {
@@ -68,11 +76,13 @@ func (s *Store) UpdateDirection(ctx context.Context, subjectID, directionID stri
 	focusAreas, _ := json.Marshal(patch.FocusAreas)
 	matchedSkills, _ := json.Marshal(patch.MatchedSkills)
 	gaps, _ := json.Marshal(patch.Gaps)
+	jdAnalysis, _ := json.Marshal(patch.JDAnalysis)
+	resumeMatch, _ := json.Marshal(patch.ResumeMatch)
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE interview_directions SET version=version+1, position=?, experience_level=?,
-		focus_areas_json=?, matched_skills_json=?, gaps_json=?, updated_at=?
+		focus_areas_json=?, matched_skills_json=?, gaps_json=?, jd_analysis_json=?, resume_match_json=?, updated_at=?
 		WHERE id=? AND subject_id=? AND version=? AND status='draft'`,
-		strings.TrimSpace(patch.Position), strings.TrimSpace(patch.ExperienceLevel), focusAreas, matchedSkills, gaps,
+		strings.TrimSpace(patch.Position), strings.TrimSpace(patch.ExperienceLevel), focusAreas, matchedSkills, gaps, jdAnalysis, resumeMatch,
 		now.Format(time.RFC3339Nano), directionID, subjectID, patch.ExpectedVersion)
 	if err != nil {
 		return session.Direction{}, fmt.Errorf("sqlite: update direction: %w", err)

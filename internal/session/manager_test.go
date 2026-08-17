@@ -57,6 +57,7 @@ func (r *memoryRepository) UpdateDirection(_ context.Context, subjectID, directi
 	direction.Version++
 	direction.Position, direction.ExperienceLevel = patch.Position, patch.ExperienceLevel
 	direction.FocusAreas, direction.MatchedSkills, direction.Gaps = patch.FocusAreas, patch.MatchedSkills, patch.Gaps
+	direction.JDAnalysis, direction.ResumeMatch = patch.JDAnalysis, patch.ResumeMatch
 	r.directions[directionID] = direction
 	return direction, nil
 }

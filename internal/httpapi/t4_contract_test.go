@@ -21,8 +21,25 @@ import (
 
 type retryContractEngine struct {
 	session.DeterministicEngine
-	mu       sync.Mutex
-	failPlan bool
+	mu          sync.Mutex
+	failPlan    bool
+	failReport  bool
+	reportDelay time.Duration
+}
+
+func (e *retryContractEngine) Report(ctx context.Context, snapshot session.Snapshot) (session.Artifact, error) {
+	e.mu.Lock()
+	fail := e.failReport
+	e.failReport = false
+	delay := e.reportDelay
+	e.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	if fail {
+		return session.Artifact{}, context.DeadlineExceeded
+	}
+	return e.DeterministicEngine.Report(ctx, snapshot)
 }
 
 func (e *retryContractEngine) ReviewPlan(ctx context.Context, snapshot session.Snapshot) (session.Artifact, error) {
@@ -35,6 +52,43 @@ func (e *retryContractEngine) ReviewPlan(ctx context.Context, snapshot session.S
 	}
 	time.Sleep(30 * time.Millisecond)
 	return e.DeterministicEngine.ReviewPlan(ctx, snapshot)
+}
+
+func TestReportRetryAPIContract(t *testing.T) {
+	server := newT4ContractServer(t, &retryContractEngine{failReport: true, reportDelay: 30 * time.Millisecond})
+	client := server.Client()
+	subject := "subject-report-retry"
+	response := postJSON(t, client, server.URL+"/api/v1/interviews", subject, map[string]any{"jd_text": "Go backend", "resume_text": "Go project", "options": map[string]any{"question_count": 15}})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create=%d %s", response.StatusCode, readBody(response))
+	}
+	var created createResponse
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	for number := 1; number <= 15; number++ {
+		snapshot := waitForHTTPSnapshot(t, client, server.URL, subject, created.InterviewID, func(snapshot session.Snapshot) bool {
+			return snapshot.AwaitingAnswer != nil && snapshot.AwaitingAnswer.Number == number
+		})
+		answered := postJSON(t, client, server.URL+"/api/v1/interviews/"+created.InterviewID+"/answers", subject, map[string]any{"prompt_id": snapshot.AwaitingAnswer.PromptID, "text": "answer"})
+		if answered.StatusCode != http.StatusAccepted {
+			t.Fatalf("answer=%d", answered.StatusCode)
+		}
+		_ = answered.Body.Close()
+	}
+	failed := waitForHTTPSnapshot(t, client, server.URL, subject, created.InterviewID, func(snapshot session.Snapshot) bool { return snapshot.Status == session.StatusCompleted })
+	if failed.ReportStatus != session.ArtifactFailed {
+		t.Fatalf("report=%s", failed.ReportStatus)
+	}
+	retry := postJSON(t, client, server.URL+"/api/v1/interviews/"+created.InterviewID+"/report/retry", subject, map[string]any{})
+	if retry.StatusCode != http.StatusAccepted {
+		t.Fatalf("retry=%d %s", retry.StatusCode, readBody(retry))
+	}
+	_ = retry.Body.Close()
+	duplicate := postJSON(t, client, server.URL+"/api/v1/interviews/"+created.InterviewID+"/report/retry", subject, map[string]any{})
+	assertAPIError(t, duplicate, http.StatusConflict, "report_retry_in_progress")
+	waitForHTTPSnapshot(t, client, server.URL, subject, created.InterviewID, func(snapshot session.Snapshot) bool { return snapshot.ReportStatus == session.ArtifactReady })
 }
 
 func TestDirectionConfirmationFeedsInterviewAndReviewPlanRetryContract(t *testing.T) {

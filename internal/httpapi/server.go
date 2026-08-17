@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"interview-agent/internal/domain"
+	"interview-agent/internal/loader"
 	"interview-agent/internal/session"
 )
 
@@ -39,6 +40,7 @@ type InterviewService interface {
 	Report(context.Context, string, string) (session.Artifact, error)
 	ReviewPlan(context.Context, string, string) (session.Artifact, error)
 	RetryReviewPlan(context.Context, string, string) error
+	RetryReport(context.Context, string, string) error
 }
 
 type Server struct {
@@ -63,6 +65,7 @@ func New(config ConfigValidator, sessions ReadinessReporter, logger *slog.Logger
 		mux.HandleFunc("POST /api/v1/interviews/{id}/answers", answerInterview(interviews))
 		mux.HandleFunc("POST /api/v1/interviews/{id}/quit", quitInterview(interviews))
 		mux.HandleFunc("GET /api/v1/interviews/{id}/report", getReport(interviews))
+		mux.HandleFunc("POST /api/v1/interviews/{id}/report/retry", retryReport(interviews))
 		mux.HandleFunc("GET /api/v1/interviews/{id}/review-plan", getReviewPlan(interviews))
 		mux.HandleFunc("POST /api/v1/interviews/{id}/review-plan/retry", retryReviewPlan(interviews))
 	}
@@ -182,8 +185,9 @@ func parseDocument(w http.ResponseWriter, r *http.Request) {
 	var kind, text string
 	source := responseSource{Type: "text"}
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
-		if err := r.ParseMultipartForm(2 << 20); err != nil {
+		const maxDocumentBytes = 10 << 20
+		r.Body = http.MaxBytesReader(w, r.Body, maxDocumentBytes+(1<<20))
+		if err := r.ParseMultipartForm(maxDocumentBytes); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_document", "无法解析上传文件", nil)
 			return
 		}
@@ -194,12 +198,29 @@ func parseDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		body, err := io.ReadAll(io.LimitReader(file, 2<<20))
+		body, err := io.ReadAll(io.LimitReader(file, maxDocumentBytes+1))
 		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_document", "无法读取上传文件", nil)
 			return
 		}
-		text = string(body)
+		if len(body) > maxDocumentBytes {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "document_too_large", "文件不能超过 10 MB", nil)
+			return
+		}
+		text, err = loader.ParseDocumentBytes(header.Filename, header.Header.Get("Content-Type"), body)
+		if err != nil {
+			var documentErr *loader.DocumentError
+			if errors.As(err, &documentErr) {
+				status := http.StatusUnprocessableEntity
+				if documentErr.Code == "unsupported_format" {
+					status = http.StatusBadRequest
+				}
+				writeAPIError(w, status, documentErr.Code, documentErr.Message, nil)
+				return
+			}
+			writeAPIError(w, http.StatusUnprocessableEntity, "parse_failed", "文档解析失败，请粘贴文本重试", nil)
+			return
+		}
 		source = responseSource{Type: "file", Name: header.Filename}
 	} else {
 		var request struct {
@@ -348,6 +369,21 @@ func retryReviewPlan(service InterviewService) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "interview_id": r.PathValue("id"), "artifact": "review_plan"})
+	}
+}
+
+func retryReport(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		if err := service.RetryReport(r.Context(), subjectID, r.PathValue("id")); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "interview_id": r.PathValue("id"), "artifact": "report"})
 	}
 }
 

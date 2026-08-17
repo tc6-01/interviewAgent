@@ -19,6 +19,8 @@ type scriptedEngine struct {
 	followUpFirst      bool
 	reviewPlanFailures int
 	reviewPlanDelay    time.Duration
+	reportFailures     int
+	reportDelay        time.Duration
 }
 
 func (e *scriptedEngine) Score(_ context.Context, _ Snapshot, question Question, _ string) (Score, error) {
@@ -42,8 +44,52 @@ func (e *scriptedEngine) FollowUp(_ context.Context, _ Snapshot, question Questi
 }
 
 func (e *scriptedEngine) Report(_ context.Context, snapshot Snapshot) (Artifact, error) {
+	if e.reportDelay > 0 {
+		time.Sleep(e.reportDelay)
+	}
+	e.mu.Lock()
+	if e.reportFailures > 0 {
+		e.reportFailures--
+		e.mu.Unlock()
+		return Artifact{}, errors.New("report provider failure")
+	}
+	e.mu.Unlock()
 	value, _ := json.Marshal(map[string]any{"interview_id": snapshot.InterviewID, "weakness_evidence": []map[string]any{{"prompt_ids": []string{"prompt_1_main"}}}})
 	return Artifact{Markdown: "# report", Value: value}, nil
+}
+
+func TestReportRetryIsExclusiveAndPreservesMarkdown(t *testing.T) {
+	manager := newManagerWithScriptedEngine(t, &scriptedEngine{reportFailures: 1, reportDelay: 30 * time.Millisecond})
+	created, err := manager.Create(context.Background(), CreateInput{SubjectID: "report-retry", QuestionCount: 15})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for number := 1; number <= 15; number++ {
+		snapshot := waitForSnapshot(t, manager, "report-retry", created.InterviewID, func(snapshot Snapshot) bool {
+			return snapshot.AwaitingAnswer != nil && snapshot.AwaitingAnswer.Number == number
+		})
+		if err := manager.Answer(context.Background(), "report-retry", created.InterviewID, AnswerRequest{PromptID: snapshot.AwaitingAnswer.PromptID, Text: "answer"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed := waitForSnapshot(t, manager, "report-retry", created.InterviewID, func(snapshot Snapshot) bool { return snapshot.Status == StatusCompleted })
+	if failed.ReportStatus != ArtifactFailed {
+		t.Fatalf("status=%s", failed.ReportStatus)
+	}
+	if err := manager.RetryReport(context.Background(), "report-retry", created.InterviewID); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RetryReport(context.Background(), "report-retry", created.InterviewID); err == nil {
+		t.Fatal("expected duplicate retry conflict")
+	}
+	waitForSnapshot(t, manager, "report-retry", created.InterviewID, func(snapshot Snapshot) bool { return snapshot.ReportStatus == ArtifactReady })
+	artifact, err := manager.Report(context.Background(), "report-retry", created.InterviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Markdown != "# report" {
+		t.Fatalf("markdown=%q", artifact.Markdown)
+	}
 }
 
 func (e *scriptedEngine) ReviewPlan(_ context.Context, snapshot Snapshot) (Artifact, error) {

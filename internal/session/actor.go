@@ -148,15 +148,16 @@ func (a *actor) prepare() error {
 	if a.input.Direction != nil {
 		a.snapshotState.Direction = a.input.Direction
 		a.snapshotState.JDAnalysis = &JDAnalysis{
-			Position: a.input.Direction.Position, ExperienceLevel: a.input.Direction.ExperienceLevel, FocusAreas: a.input.Direction.FocusAreas,
+			Position: a.input.Direction.JDAnalysis.Position, Company: a.input.Direction.JDAnalysis.Company,
+			ExperienceLevel: a.input.Direction.JDAnalysis.ExperienceLevel, RequiredSkills: a.input.Direction.JDAnalysis.RequiredSkills,
+			Responsibilities: a.input.Direction.JDAnalysis.Responsibilities, KeyTopics: a.input.Direction.JDAnalysis.KeyTopics,
 		}
 		a.emit("jd_analysis", a.snapshotState.JDAnalysis, true)
 	}
 	a.emit("stage", map[string]any{"stage": "resume_match", "message": "matching resume"}, true)
 	if a.input.Direction != nil {
-		a.snapshotState.MatchResult = &MatchResult{
-			OverallScore: directionMatchScore(*a.input.Direction), MatchedSkills: a.input.Direction.MatchedSkills, Gaps: a.input.Direction.Gaps,
-		}
+		match := a.input.Direction.ResumeMatch
+		a.snapshotState.MatchResult = &match
 		a.emit("resume_match", a.snapshotState.MatchResult, true)
 	}
 	a.emit("stage", map[string]any{"stage": "question_plan", "message": "planning interview"}, true)
@@ -221,7 +222,7 @@ func (a *actor) processAnswer(request AnswerRequest, question Question) {
 		score = Score{Feedback: "score unavailable"}
 	}
 	a.snapshotState.QAHistory = append(a.snapshotState.QAHistory, QARecord{
-		PromptID: question.PromptID, Number: question.Number, Kind: question.Kind,
+		PromptID: question.PromptID, Number: question.Number, Kind: question.Kind, Type: question.Type,
 		Question: question.Content, Answer: request.Text, Score: score.Value, Feedback: score.Feedback,
 		KeyPointsHit: score.KeyPointsHit, KeyPointsMissed: score.KeyPointsMissed, ScoreDegraded: degraded,
 		AnsweredAt: time.Now().UTC(),
@@ -275,6 +276,7 @@ func (a *actor) complete() {
 		return
 	}
 	a.snapshotState.Report = report.Value
+	a.snapshotState.ReportMarkdown = report.Markdown
 	a.snapshotState.ReportStatus = ArtifactReady
 	a.snapshotState.ReportReady = true
 	a.emit("report", map[string]any{"report_markdown": report.Markdown, "report": json.RawMessage(report.Value)}, true)
@@ -294,6 +296,7 @@ func (a *actor) complete() {
 		return
 	}
 	a.snapshotState.ReviewPlan = plan.Value
+	a.snapshotState.ReviewPlanMarkdown = plan.Markdown
 	a.snapshotState.ReviewPlanStatus = ArtifactReady
 	a.snapshotState.ReviewPlanReady = true
 	a.emit("review_plan", map[string]any{"plan_markdown": plan.Markdown, "plan": json.RawMessage(plan.Value)}, true)

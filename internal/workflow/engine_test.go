@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -19,6 +20,24 @@ type queuedGateway struct {
 	mu        sync.Mutex
 	responses []string
 	requests  int
+}
+
+type priorityIndex struct{}
+
+func (*priorityIndex) Check(context.Context) error                  { return nil }
+func (*priorityIndex) ReplaceScope(string, []domain.Question) error { return nil }
+func (*priorityIndex) RemoveScope(string)                           {}
+func (*priorityIndex) Search(_ context.Context, request domain.SearchRequest) ([]domain.SearchHit, error) {
+	questionType := request.Types[0]
+	if request.Scopes[0] == "user:subject" && questionType == domain.QuestionTypeBasic {
+		return []domain.SearchHit{{Question: domain.Question{ID: "user-low", Type: questionType, Topic: "Go", Text: "user question", Source: "user"}, Score: 0.1}}, nil
+	}
+	counts := map[domain.QuestionType]int{domain.QuestionTypeBasic: 8, domain.QuestionTypeExperience: 5, domain.QuestionTypeDesign: 2}
+	hits := make([]domain.SearchHit, 0, counts[questionType])
+	for i := 0; i < counts[questionType]; i++ {
+		hits = append(hits, domain.SearchHit{Question: domain.Question{ID: fmt.Sprintf("builtin-%s-%d", questionType, i), Type: questionType, Topic: "Go", Text: "builtin question", Source: "builtin"}, Score: 100})
+	}
+	return hits, nil
 }
 
 func (g *queuedGateway) Configured(context.Context) error { return nil }
@@ -61,7 +80,7 @@ func newRuntimeForTest(t *testing.T, responses ...string) (*Engine, *queuedGatew
 func TestDirectionSchemaRepairRunsAtMostOnce(t *testing.T) {
 	runtime, gateway := newRuntimeForTest(t,
 		`{"position":"Go Engineer"}`,
-		`{"position":"Go Engineer","experience_level":"senior","focus_areas":["Go","distributed systems"],"matched_skills":["Go"],"gaps":[]}`,
+		`{"position":"Go Engineer","experience_level":"senior","focus_areas":["Go","distributed systems"],"matched_skills":["Go"],"gaps":[],"jd_analysis":{"position":"Go Engineer","company":"ACME","experience_level":"senior","required_skills":["Go"],"responsibilities":["build services"],"key_topics":["distributed systems"]},"resume_match_result":{"overall_score":90,"skill_match":[{"skill_name":"Go","required":true,"matched":true,"match_score":100,"evidence":"Five years building Go services"}],"strengths":["Go"],"weaknesses":[],"focus_areas":["distributed systems"],"resume_gaps":[]}}`,
 	)
 	direction, err := runtime.GenerateDirection(context.Background(), "subject", "jd fixture", "resume fixture")
 	if err != nil {
@@ -74,10 +93,11 @@ func TestDirectionSchemaRepairRunsAtMostOnce(t *testing.T) {
 
 func TestReviewPlanReferencesWeakQuestionsSanitizesURLsAndAddsAdvancedDirections(t *testing.T) {
 	runtime, _ := newRuntimeForTest(t, `{
-		"study_plan":[{"topic":"capacity","objective":"improve","actions":["practice"],"time_estimate":"2h"}],
+		"study_plan":[{"topic":"capacity","objective":"improve","actions":["practice","review"],"time_estimate":"2h"}],
 		"resources":[
 			{"title":"Go docs","url":"https://go.dev/doc/","type":"article","desc":"official"},
-			{"title":"Unverified","url":"https://example.invalid/course","type":"video","desc":"unknown"}
+			{"title":"Unverified","url":"https://example.invalid/course","type":"video","desc":"unknown"},
+			{"title":"Go packages","url":"https://pkg.go.dev/","type":"article","desc":"reference"}
 		],
 		"advanced_directions":["performance engineering"]
 	}`)
@@ -117,7 +137,7 @@ func TestReviewPlanReferencesWeakQuestionsSanitizesURLsAndAddsAdvancedDirections
 }
 
 func TestDirectionFixtureP50(t *testing.T) {
-	const fixture = `{"position":"Backend Engineer","experience_level":"mid","focus_areas":["Go"],"matched_skills":["Go"],"gaps":[]}`
+	const fixture = `{"position":"Backend Engineer","experience_level":"mid","focus_areas":["Go"],"matched_skills":["Go"],"gaps":[],"jd_analysis":{"position":"Backend Engineer","company":"ACME","experience_level":"mid","required_skills":["Go"],"responsibilities":["build services"],"key_topics":["Go"]},"resume_match_result":{"overall_score":90,"skill_match":[{"skill_name":"Go","required":true,"matched":true,"match_score":100,"evidence":"Go project"}],"strengths":["Go"],"weaknesses":[],"focus_areas":["Go"],"resume_gaps":[]}}`
 	var durations []time.Duration
 	for index := 0; index < 5; index++ {
 		runtime, _ := newRuntimeForTest(t, fixture)
@@ -135,4 +155,49 @@ func TestDirectionFixtureP50(t *testing.T) {
 		}
 	}
 	t.Logf("fixed fixture direction generation P50=%s", durations[len(durations)/2])
+}
+
+func TestReportUsesPersistedQuestionTypesAndHighScoreHasNoWeakness(t *testing.T) {
+	runtime, _ := newRuntimeForTest(t)
+	records := make([]session.QARecord, 0, 15)
+	for i := 1; i <= 15; i++ {
+		kind := "basic"
+		if i > 8 {
+			kind = "experience"
+		}
+		if i > 13 {
+			kind = "design"
+		}
+		records = append(records, session.QARecord{PromptID: fmt.Sprintf("p%d", i), Number: i, Kind: "primary", Type: kind, Score: 100})
+	}
+	artifact, err := runtime.Report(context.Background(), session.Snapshot{InterviewID: "high", QAHistory: records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Dimensions map[string]float64 `json:"dimension_scores"`
+		Weaknesses []string           `json:"weaknesses"`
+		Advanced   []string           `json:"advanced_directions"`
+	}
+	if err := json.Unmarshal(artifact.Value, &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Dimensions) != 3 || report.Dimensions["basic"] != 100 || report.Dimensions["experience"] != 100 || report.Dimensions["design"] != 100 {
+		t.Fatalf("dimensions=%v", report.Dimensions)
+	}
+	if len(report.Weaknesses) != 0 || len(report.Advanced) < 2 {
+		t.Fatalf("high score report=%s", artifact.Value)
+	}
+}
+
+func TestPrepareSelectsUserScopeBeforeHigherScoredBuiltin(t *testing.T) {
+	runtime, _ := newRuntimeForTest(t)
+	runtime.index = &priorityIndex{}
+	questions, err := runtime.Prepare(context.Background(), session.CreateInput{SubjectID: "subject", QuestionCount: 15, Direction: &session.Direction{Position: "Go Engineer", ExperienceLevel: "senior", FocusAreas: []string{"Go"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(questions) != 15 || questions[0].Source != "user" {
+		t.Fatalf("first=%#v total=%d", questions[0], len(questions))
+	}
 }

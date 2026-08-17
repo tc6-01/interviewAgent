@@ -116,10 +116,20 @@ func (m *Manager) GenerateDirection(ctx context.Context, subjectID, jdText, resu
 }
 
 func (m *Manager) UpdateDirection(ctx context.Context, subjectID, directionID string, patch DirectionPatch) (Direction, error) {
+	current, err := m.repository.GetDirection(ctx, subjectID, directionID)
+	if err != nil {
+		return Direction{}, err
+	}
+	if strings.TrimSpace(patch.JDAnalysis.Position) == "" {
+		patch.JDAnalysis = current.JDAnalysis
+	}
+	if patch.ResumeMatch.SkillMatch == nil {
+		patch.ResumeMatch = current.ResumeMatch
+	}
 	direction := Direction{
 		ID: directionID, SubjectID: subjectID, Version: patch.ExpectedVersion, Status: DirectionDraft,
 		Position: patch.Position, ExperienceLevel: patch.ExperienceLevel, FocusAreas: patch.FocusAreas,
-		MatchedSkills: patch.MatchedSkills, Gaps: patch.Gaps,
+		MatchedSkills: patch.MatchedSkills, Gaps: patch.Gaps, JDAnalysis: patch.JDAnalysis, ResumeMatch: patch.ResumeMatch,
 	}
 	if err := validateDirection(direction); err != nil {
 		return Direction{}, err
@@ -214,7 +224,7 @@ func (m *Manager) Report(ctx context.Context, subjectID, interviewID string) (Ar
 	if snapshot.ReportStatus != ArtifactReady || len(snapshot.Report) == 0 {
 		return Artifact{}, &ConflictError{Code: "report_not_ready", Message: "评估报告尚未就绪"}
 	}
-	return Artifact{Markdown: markdownArtifact("Interview report", snapshot.Report), Value: snapshot.Report}, nil
+	return Artifact{Markdown: snapshot.ReportMarkdown, Value: snapshot.Report}, nil
 }
 
 func (m *Manager) ReviewPlan(ctx context.Context, subjectID, interviewID string) (Artifact, error) {
@@ -225,7 +235,68 @@ func (m *Manager) ReviewPlan(ctx context.Context, subjectID, interviewID string)
 	if snapshot.ReviewPlanStatus != ArtifactReady || len(snapshot.ReviewPlan) == 0 {
 		return Artifact{}, &ConflictError{Code: "review_plan_not_ready", Message: "复习计划尚未就绪"}
 	}
-	return Artifact{Markdown: markdownArtifact("Review plan", snapshot.ReviewPlan), Value: snapshot.ReviewPlan}, nil
+	return Artifact{Markdown: snapshot.ReviewPlanMarkdown, Value: snapshot.ReviewPlan}, nil
+}
+
+func (m *Manager) RetryReport(ctx context.Context, subjectID, interviewID string) error {
+	snapshot, err := m.Snapshot(ctx, subjectID, interviewID)
+	if err != nil {
+		return err
+	}
+	key := "report:" + interviewID
+	m.mu.Lock()
+	if m.retries[key] || snapshot.ReportStatus == ArtifactGenerating {
+		m.mu.Unlock()
+		return &ConflictError{Code: "report_retry_in_progress", Message: "评估报告正在重试"}
+	}
+	if snapshot.ReportStatus != ArtifactFailed || len(snapshot.QAHistory) == 0 {
+		m.mu.Unlock()
+		return &ConflictError{Code: "report_retry_not_allowed", Message: "当前状态不能重试评估报告"}
+	}
+	m.retries[key] = true
+	snapshot.ReportStatus = ArtifactGenerating
+	snapshot.UpdatedAt = time.Now().UTC()
+	if archived, ok := m.archived[interviewID]; ok {
+		archived.snapshot = snapshot
+		m.archived[interviewID] = archived
+	}
+	m.mu.Unlock()
+	if err := m.repository.SaveSession(ctx, snapshot); err != nil {
+		m.mu.Lock()
+		delete(m.retries, key)
+		m.mu.Unlock()
+		return err
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		report, reportErr := m.engine.Report(context.Background(), cloneSnapshot(snapshot))
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.retries, key)
+		if reportErr != nil {
+			snapshot.ReportStatus = ArtifactFailed
+		} else {
+			snapshot.Report = report.Value
+			snapshot.ReportMarkdown = report.Markdown
+			snapshot.ReportStatus = ArtifactReady
+			snapshot.ReportReady = true
+			if snapshot.ReviewPlanStatus == ArtifactNotStarted {
+				snapshot.ReviewPlanStatus = ArtifactFailed
+			}
+		}
+		snapshot.UpdatedAt = time.Now().UTC()
+		if archived, ok := m.archived[interviewID]; ok {
+			archived.snapshot = snapshot
+			m.archived[interviewID] = archived
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := m.repository.SaveSession(persistCtx, snapshot); err != nil {
+			m.logger.Error("persist report retry", "interview_id", interviewID, "error_type", "storage")
+		}
+	}()
+	return nil
 }
 
 func (m *Manager) RetryReviewPlan(ctx context.Context, subjectID, interviewID string) error {
@@ -234,7 +305,8 @@ func (m *Manager) RetryReviewPlan(ctx context.Context, subjectID, interviewID st
 		return err
 	}
 	m.mu.Lock()
-	if m.retries[interviewID] || snapshot.ReviewPlanStatus == ArtifactGenerating {
+	key := "review_plan:" + interviewID
+	if m.retries[key] || snapshot.ReviewPlanStatus == ArtifactGenerating {
 		m.mu.Unlock()
 		return &ConflictError{Code: "review_plan_retry_in_progress", Message: "复习计划正在重试"}
 	}
@@ -246,7 +318,7 @@ func (m *Manager) RetryReviewPlan(ctx context.Context, subjectID, interviewID st
 		m.mu.Unlock()
 		return &ConflictError{Code: "review_plan_retry_not_allowed", Message: "当前状态不能重试复习计划"}
 	}
-	m.retries[interviewID] = true
+	m.retries[key] = true
 	snapshot.ReviewPlanStatus = ArtifactGenerating
 	snapshot.UpdatedAt = time.Now().UTC()
 	if archived, ok := m.archived[interviewID]; ok {
@@ -256,7 +328,7 @@ func (m *Manager) RetryReviewPlan(ctx context.Context, subjectID, interviewID st
 	m.mu.Unlock()
 	if err := m.repository.SaveSession(ctx, snapshot); err != nil {
 		m.mu.Lock()
-		delete(m.retries, interviewID)
+		delete(m.retries, key)
 		m.mu.Unlock()
 		return err
 	}
@@ -266,11 +338,12 @@ func (m *Manager) RetryReviewPlan(ctx context.Context, subjectID, interviewID st
 		plan, planErr := m.engine.ReviewPlan(context.Background(), cloneSnapshot(snapshot))
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		delete(m.retries, interviewID)
+		delete(m.retries, key)
 		if planErr != nil {
 			snapshot.ReviewPlanStatus = ArtifactFailed
 		} else {
 			snapshot.ReviewPlan = plan.Value
+			snapshot.ReviewPlanMarkdown = plan.Markdown
 			snapshot.ReviewPlanStatus = ArtifactReady
 			snapshot.ReviewPlanReady = true
 		}
@@ -441,12 +514,19 @@ func validateDirection(direction Direction) error {
 	if len(direction.FocusAreas) == 0 || len(direction.MatchedSkills) == 0 || direction.Gaps == nil {
 		return fmt.Errorf("session: direction focus_areas, matched_skills and gaps are required")
 	}
+	if strings.TrimSpace(direction.JDAnalysis.Position) == "" || direction.JDAnalysis.RequiredSkills == nil || direction.JDAnalysis.Responsibilities == nil || direction.JDAnalysis.KeyTopics == nil {
+		return fmt.Errorf("session: jd_analysis is incomplete")
+	}
+	if direction.ResumeMatch.SkillMatch == nil || direction.ResumeMatch.Strengths == nil || direction.ResumeMatch.Weaknesses == nil || direction.ResumeMatch.FocusAreas == nil || direction.ResumeMatch.ResumeGaps == nil {
+		return fmt.Errorf("session: resume_match_result is incomplete")
+	}
+	for _, skill := range direction.ResumeMatch.SkillMatch {
+		if skill.Matched && strings.TrimSpace(skill.Evidence) == "" {
+			return fmt.Errorf("session: matched skill evidence is required")
+		}
+	}
 	if direction.Version <= 0 {
 		return fmt.Errorf("session: direction version must be positive")
 	}
 	return nil
-}
-
-func markdownArtifact(title string, value []byte) string {
-	return "# " + title + "\n\n```json\n" + string(value) + "\n```"
 }

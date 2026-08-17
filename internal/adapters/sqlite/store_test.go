@@ -22,8 +22,8 @@ func TestMigrationsAreRestartSafe(t *testing.T) {
 		if err := store.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrations); err != nil {
 			t.Fatalf("read migrations: %v", err)
 		}
-		if migrations != 3 {
-			t.Fatalf("migration count = %d, want 3", migrations)
+		if migrations != 4 {
+			t.Fatalf("migration count = %d, want 4", migrations)
 		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)

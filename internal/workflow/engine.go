@@ -33,11 +33,13 @@ func New(agent *coreagent.Runtime, repository domain.Repository, index domain.Qu
 }
 
 type directionPayload struct {
-	Position        string   `json:"position"`
-	ExperienceLevel string   `json:"experience_level"`
-	FocusAreas      []string `json:"focus_areas"`
-	MatchedSkills   []string `json:"matched_skills"`
-	Gaps            []string `json:"gaps"`
+	Position        string                    `json:"position"`
+	ExperienceLevel string                    `json:"experience_level"`
+	FocusAreas      []string                  `json:"focus_areas"`
+	MatchedSkills   []string                  `json:"matched_skills"`
+	Gaps            []string                  `json:"gaps"`
+	JDAnalysis      session.JDAnalysis        `json:"jd_analysis"`
+	ResumeMatch     session.ResumeMatchResult `json:"resume_match_result"`
 }
 
 func (r *Engine) GenerateDirection(ctx context.Context, subjectID, jdText, resumeText string) (session.Direction, error) {
@@ -48,7 +50,7 @@ func (r *Engine) GenerateDirection(ctx context.Context, subjectID, jdText, resum
 		defer r.logNode("jd_resume_analysis", started)
 		return r.completeStructured(nodeCtx, domain.LLMRequest{
 			Operation: "direction.generate", JSON: true,
-			SystemPrompt: "你是模拟面试方向规划器。仅返回 JSON，不复述简历或 JD。字段必须为 position、experience_level、focus_areas、matched_skills、gaps；数组必须存在，focus_areas 和 matched_skills 非空。",
+			SystemPrompt: "你是模拟面试方向规划器。仅返回 JSON，不复述完整简历或 JD。返回 position、experience_level、focus_areas、matched_skills、gaps、jd_analysis、resume_match_result。jd_analysis 必须含 position、company、experience_level、required_skills、responsibilities、key_topics；resume_match_result 必须含 overall_score、skill_match、strengths、weaknesses、focus_areas、resume_gaps。每个 matched=true 的 skill_match 必须提供来自简历原文的 evidence。所有数组字段必须存在。",
 			UserPrompt:   "JD:\n" + jdText + "\n\nResume:\n" + resumeText,
 		}, validateDirectionPayload)
 	})); err != nil {
@@ -86,6 +88,7 @@ func (r *Engine) GenerateDirection(ctx context.Context, subjectID, jdText, resum
 	return session.Direction{
 		SubjectID: subjectID, Position: payload.Position, ExperienceLevel: payload.ExperienceLevel,
 		FocusAreas: payload.FocusAreas, MatchedSkills: payload.MatchedSkills, Gaps: payload.Gaps,
+		JDAnalysis: payload.JDAnalysis, ResumeMatch: payload.ResumeMatch,
 	}, nil
 }
 
@@ -123,7 +126,7 @@ func (r *Engine) Prepare(ctx context.Context, input session.CreateInput) ([]sess
 		for index, question := range selected {
 			assembled = append(assembled, session.Question{
 				PromptID: fmt.Sprintf("prompt_%d_main", index+1), Number: index + 1, Kind: "primary",
-				Content: question.Text, Source: question.Source,
+				Content: question.Text, Source: question.Source, Type: string(question.Type),
 			})
 		}
 		if len(assembled) != 15 {
@@ -155,18 +158,21 @@ func (r *Engine) retrieveQuestions(ctx context.Context, input session.CreateInpu
 	seen := map[string]bool{}
 	for _, questionType := range []domain.QuestionType{domain.QuestionTypeBasic, domain.QuestionTypeExperience, domain.QuestionTypeDesign} {
 		wanted := plan.Counts[questionType]
-		hits, err := r.index.Search(ctx, domain.SearchRequest{
-			Scopes: []string{"user:" + input.SubjectID, "builtin"}, Query: query, Types: []domain.QuestionType{questionType}, Limit: wanted * 3,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, hit := range hits {
-			if len(result) >= plan.Total || seen[hit.Question.ID] || countType(result, questionType) >= wanted {
-				continue
+		for _, scope := range []string{"user:" + input.SubjectID, "builtin"} {
+			hits, err := r.index.Search(ctx, domain.SearchRequest{Scopes: []string{scope}, Query: query, Types: []domain.QuestionType{questionType}, Limit: wanted * 3})
+			if err != nil {
+				return nil, err
 			}
-			seen[hit.Question.ID] = true
-			result = append(result, hit.Question)
+			for _, hit := range hits {
+				if seen[hit.Question.ID] || countType(result, questionType) >= wanted {
+					continue
+				}
+				seen[hit.Question.ID] = true
+				result = append(result, hit.Question)
+			}
+			if countType(result, questionType) >= wanted {
+				break
+			}
 		}
 		for countType(result, questionType) < wanted {
 			number := countType(result, questionType) + 1
@@ -258,7 +264,7 @@ func (r *Engine) FollowUp(ctx context.Context, _ session.Snapshot, question sess
 		return nil, err
 	}
 	return &session.Question{
-		PromptID: fmt.Sprintf("prompt_%d_followup", question.Number), Number: question.Number, Kind: "followup", Content: payload.Question, Source: "llm:follow-up",
+		PromptID: fmt.Sprintf("prompt_%d_followup", question.Number), Number: question.Number, Kind: "followup", Type: question.Type, Content: payload.Question, Source: "llm:follow-up",
 	}, nil
 }
 
@@ -272,7 +278,7 @@ func (r *Engine) Report(_ context.Context, snapshot session.Snapshot) (session.A
 	for _, kind := range []string{"basic", "experience", "design"} {
 		var scores []float64
 		for _, item := range primary {
-			if strings.Contains(item.Question, kind) {
+			if item.Type == kind && !item.ScoreDegraded {
 				scores = append(scores, item.Score)
 			}
 		}
@@ -285,8 +291,8 @@ func (r *Engine) Report(_ context.Context, snapshot session.Snapshot) (session.A
 	weaknesses := make([]string, 0, 3)
 	evidence := make([]map[string]any, 0, 3)
 	for _, item := range sorted {
-		if item.Score >= 75 && len(weaknesses) > 0 {
-			break
+		if item.Score >= 75 {
+			continue
 		}
 		topic := fmt.Sprintf("第 %d 题失分点", item.Number)
 		if len(item.KeyPointsMissed) > 0 {
@@ -340,7 +346,12 @@ func (r *Engine) ReviewPlan(ctx context.Context, snapshot session.Snapshot) (ses
 	if len(primary) == 0 || snapshot.ReportStatus != session.ArtifactReady {
 		return session.Artifact{}, fmt.Errorf("graph: review plan prerequisites are not ready")
 	}
-	weakRecords := append([]session.QARecord(nil), primary...)
+	weakRecords := make([]session.QARecord, 0, len(primary))
+	for _, record := range primary {
+		if !record.ScoreDegraded && record.Score < 75 {
+			weakRecords = append(weakRecords, record)
+		}
+	}
 	sort.SliceStable(weakRecords, func(i, j int) bool { return weakRecords[i].Score < weakRecords[j].Score })
 	if len(weakRecords) > 3 {
 		weakRecords = weakRecords[:3]
@@ -349,7 +360,7 @@ func (r *Engine) ReviewPlan(ctx context.Context, snapshot session.Snapshot) (ses
 	var payload reviewPlanPayload
 	raw, err := r.completeStructured(ctx, domain.LLMRequest{
 		Operation: "review_plan.generate", JSON: true,
-		SystemPrompt: "生成可执行复习计划，仅返回 JSON：study_plan、resources、advanced_directions。资源优先官方文档或稳定开源仓库；不确定 URL 时省略 url。",
+		SystemPrompt: "生成可执行复习计划，仅返回 JSON：study_plan、resources、advanced_directions。每个 study_plan.actions 至少 2 项，resources 至少 3 项。资源优先官方文档或稳定开源仓库；不确定 URL 时省略 url。无真实弱项时不得伪造 weak area，必须提供 2-3 个 advanced_directions。",
 		UserPrompt:   "Weak scored questions:\n" + string(weakInput) + fmt.Sprintf("\nOverall score: %.0f", averageScore(primary)),
 	}, validateReviewPlanPayload)
 	if err != nil {
@@ -484,6 +495,23 @@ func validateDirectionPayload(value directionPayload) error {
 	if strings.TrimSpace(value.Position) == "" || strings.TrimSpace(value.ExperienceLevel) == "" || len(value.FocusAreas) == 0 || len(value.MatchedSkills) == 0 || value.Gaps == nil {
 		return fmt.Errorf("direction response is incomplete")
 	}
+	if strings.TrimSpace(value.JDAnalysis.Position) == "" || value.JDAnalysis.RequiredSkills == nil || value.JDAnalysis.Responsibilities == nil || value.JDAnalysis.KeyTopics == nil {
+		return fmt.Errorf("direction jd_analysis is incomplete")
+	}
+	if value.ResumeMatch.SkillMatch == nil || value.ResumeMatch.Strengths == nil || value.ResumeMatch.Weaknesses == nil || value.ResumeMatch.FocusAreas == nil || value.ResumeMatch.ResumeGaps == nil {
+		return fmt.Errorf("direction resume_match_result is incomplete")
+	}
+	if value.ResumeMatch.OverallScore < 0 || value.ResumeMatch.OverallScore > 100 {
+		return fmt.Errorf("resume match score is invalid")
+	}
+	for _, skill := range value.ResumeMatch.SkillMatch {
+		if strings.TrimSpace(skill.SkillName) == "" || skill.MatchScore < 0 || skill.MatchScore > 100 {
+			return fmt.Errorf("skill match is invalid")
+		}
+		if skill.Matched && strings.TrimSpace(skill.Evidence) == "" {
+			return fmt.Errorf("matched skill evidence is required")
+		}
+	}
 	return nil
 }
 
@@ -492,8 +520,16 @@ func validateReviewPlanPayload(value reviewPlanPayload) error {
 		return fmt.Errorf("review plan study_plan is required")
 	}
 	for _, item := range value.StudyPlan {
-		if strings.TrimSpace(item.Topic) == "" || strings.TrimSpace(item.Objective) == "" || len(item.Actions) == 0 || strings.TrimSpace(item.TimeEstimate) == "" {
+		if strings.TrimSpace(item.Topic) == "" || strings.TrimSpace(item.Objective) == "" || len(item.Actions) < 2 || strings.TrimSpace(item.TimeEstimate) == "" {
 			return fmt.Errorf("review plan item is incomplete")
+		}
+	}
+	if len(value.Resources) < 3 {
+		return fmt.Errorf("review plan requires at least three resources")
+	}
+	for _, resource := range value.Resources {
+		if strings.TrimSpace(resource.Title) == "" || strings.TrimSpace(resource.Type) == "" || strings.TrimSpace(resource.Desc) == "" {
+			return fmt.Errorf("review plan resource is incomplete")
 		}
 	}
 	return nil
@@ -588,6 +624,7 @@ func detailedReview(records []session.QARecord) []map[string]any {
 	for _, item := range records {
 		result = append(result, map[string]any{
 			"prompt_id": item.PromptID, "question_content": item.Question, "user_answer": item.Answer, "score": item.Score,
+			"type":    item.Type,
 			"comment": item.Feedback, "key_points_hit": item.KeyPointsHit, "key_points_missed": item.KeyPointsMissed,
 		})
 	}
@@ -612,9 +649,17 @@ func stableResourceURL(raw string) bool {
 }
 
 func reportMarkdown(report map[string]any) string {
-	return fmt.Sprintf("# 面试评估报告\n\n- 综合得分：%v\n- 等级：%v\n\n%s", report["overall_score"], report["overall_level"], report["summary"])
+	return fmt.Sprintf("# 面试评估报告\n\n## 总结\n\n- 综合得分：%v\n- 等级：%v\n\n%s\n\n## 优势\n\n%s\n\n## 弱项\n\n%s", report["overall_score"], report["overall_level"], report["summary"], markdownList(report["strengths"]), markdownList(report["weaknesses"]))
 }
 
 func reviewPlanMarkdown(plan map[string]any) string {
-	return fmt.Sprintf("# 复习计划\n\n已基于 %d 个失分证据生成针对性计划。", len(plan["weak_areas"].([]map[string]any)))
+	return fmt.Sprintf("# 复习计划\n\n## 依据\n\n已基于 %d 个真实失分证据生成计划。\n\n## 学习安排\n\n结构化学习项和资源请见同响应中的 `plan` 字段。", len(plan["weak_areas"].([]map[string]any)))
+}
+
+func markdownList(value any) string {
+	items, _ := value.([]string)
+	if len(items) == 0 {
+		return "- 无"
+	}
+	return "- " + strings.Join(items, "\n- ")
 }

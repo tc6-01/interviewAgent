@@ -27,6 +27,8 @@ func (DeterministicEngine) GenerateDirection(_ context.Context, subjectID, _, _ 
 		SubjectID: subjectID, Version: 1, Status: DirectionDraft, Position: "Backend Engineer", ExperienceLevel: "mid",
 		FocusAreas:    []string{"backend fundamentals", "project experience", "system design"},
 		MatchedSkills: []string{"backend development"}, Gaps: []string{"system design"}, CreatedAt: now, UpdatedAt: now,
+		JDAnalysis:  JDAnalysis{Position: "Backend Engineer", Company: "", ExperienceLevel: "mid", RequiredSkills: []string{"backend development"}, Responsibilities: []string{"build backend services"}, KeyTopics: []string{"backend fundamentals", "system design"}},
+		ResumeMatch: ResumeMatchResult{OverallScore: 80, SkillMatch: []SkillMatch{{SkillName: "backend development", Required: true, Matched: true, MatchScore: 80, Evidence: "backend development"}}, Strengths: []string{"backend development"}, Weaknesses: []string{"system design"}, FocusAreas: []string{"backend fundamentals", "system design"}, ResumeGaps: []string{"system design"}},
 	}, nil
 }
 
@@ -38,10 +40,18 @@ func (DeterministicEngine) Prepare(_ context.Context, input CreateInput) ([]Ques
 	questions := make([]Question, 0, count)
 	for i := 1; i <= count; i++ {
 		kind := "primary"
+		questionType := "basic"
+		if i > 8 {
+			questionType = "experience"
+		}
+		if i > 13 {
+			questionType = "design"
+		}
 		questions = append(questions, Question{
 			PromptID: fmt.Sprintf("prompt_%d_main", i),
 			Number:   i,
 			Kind:     kind,
+			Type:     questionType,
 			Content:  fmt.Sprintf("Interview question %d", i),
 			Source:   "session:deterministic",
 		})

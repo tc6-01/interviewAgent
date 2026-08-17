@@ -47,34 +47,39 @@ const (
 )
 
 type Direction struct {
-	ID              string          `json:"direction_id"`
-	SubjectID       string          `json:"-"`
-	Version         int             `json:"version"`
-	Status          DirectionStatus `json:"status"`
-	Position        string          `json:"position"`
-	ExperienceLevel string          `json:"experience_level"`
-	FocusAreas      []string        `json:"focus_areas"`
-	MatchedSkills   []string        `json:"matched_skills"`
-	Gaps            []string        `json:"gaps"`
-	SourceSHA256    string          `json:"-"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	ConfirmedAt     *time.Time      `json:"confirmed_at"`
+	ID              string            `json:"direction_id"`
+	SubjectID       string            `json:"-"`
+	Version         int               `json:"version"`
+	Status          DirectionStatus   `json:"status"`
+	Position        string            `json:"position"`
+	ExperienceLevel string            `json:"experience_level"`
+	FocusAreas      []string          `json:"focus_areas"`
+	MatchedSkills   []string          `json:"matched_skills"`
+	Gaps            []string          `json:"gaps"`
+	JDAnalysis      JDAnalysis        `json:"jd_analysis"`
+	ResumeMatch     ResumeMatchResult `json:"resume_match_result"`
+	SourceSHA256    string            `json:"-"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	ConfirmedAt     *time.Time        `json:"confirmed_at"`
 }
 
 type DirectionPatch struct {
-	ExpectedVersion int      `json:"expected_version"`
-	Position        string   `json:"position"`
-	ExperienceLevel string   `json:"experience_level"`
-	FocusAreas      []string `json:"focus_areas"`
-	MatchedSkills   []string `json:"matched_skills"`
-	Gaps            []string `json:"gaps"`
+	ExpectedVersion int               `json:"expected_version"`
+	Position        string            `json:"position"`
+	ExperienceLevel string            `json:"experience_level"`
+	FocusAreas      []string          `json:"focus_areas"`
+	MatchedSkills   []string          `json:"matched_skills"`
+	Gaps            []string          `json:"gaps"`
+	JDAnalysis      JDAnalysis        `json:"jd_analysis"`
+	ResumeMatch     ResumeMatchResult `json:"resume_match_result"`
 }
 
 type Question struct {
 	PromptID string `json:"prompt_id"`
 	Number   int    `json:"question_no"`
 	Kind     string `json:"kind"`
+	Type     string `json:"type"`
 	Content  string `json:"content"`
 	Source   string `json:"source"`
 }
@@ -89,6 +94,7 @@ type QARecord struct {
 	PromptID        string    `json:"prompt_id"`
 	Number          int       `json:"question_no"`
 	Kind            string    `json:"kind"`
+	Type            string    `json:"type"`
 	Question        string    `json:"question"`
 	Answer          string    `json:"answer"`
 	Score           float64   `json:"score"`
@@ -105,27 +111,29 @@ type Progress struct {
 }
 
 type Snapshot struct {
-	InterviewID      string          `json:"interview_id"`
-	SubjectID        string          `json:"-"`
-	Status           Status          `json:"status"`
-	Stage            string          `json:"stage"`
-	AwaitingAnswer   *AwaitingAnswer `json:"awaiting_answer"`
-	CurrentQuestion  *Question       `json:"current_question"`
-	Progress         Progress        `json:"progress"`
-	Direction        *Direction      `json:"direction,omitempty"`
-	JDAnalysis       *JDAnalysis     `json:"jd_analysis,omitempty"`
-	MatchResult      *MatchResult    `json:"match_result,omitempty"`
-	QAHistory        []QARecord      `json:"qa_history"`
-	EndedReason      *string         `json:"ended_reason"`
-	ReportStatus     ArtifactStatus  `json:"report_status"`
-	ReviewPlanStatus ArtifactStatus  `json:"review_plan_status"`
-	ReportReady      bool            `json:"report_ready"`
-	ReviewPlanReady  bool            `json:"review_plan_ready"`
-	Report           json.RawMessage `json:"-"`
-	ReviewPlan       json.RawMessage `json:"-"`
-	LastEventID      int64           `json:"last_event_id,string"`
-	CreatedAt        time.Time       `json:"created_at"`
-	UpdatedAt        time.Time       `json:"updated_at"`
+	InterviewID        string          `json:"interview_id"`
+	SubjectID          string          `json:"-"`
+	Status             Status          `json:"status"`
+	Stage              string          `json:"stage"`
+	AwaitingAnswer     *AwaitingAnswer `json:"awaiting_answer"`
+	CurrentQuestion    *Question       `json:"current_question"`
+	Progress           Progress        `json:"progress"`
+	Direction          *Direction      `json:"direction,omitempty"`
+	JDAnalysis         *JDAnalysis     `json:"jd_analysis,omitempty"`
+	MatchResult        *MatchResult    `json:"match_result,omitempty"`
+	QAHistory          []QARecord      `json:"qa_history"`
+	EndedReason        *string         `json:"ended_reason"`
+	ReportStatus       ArtifactStatus  `json:"report_status"`
+	ReviewPlanStatus   ArtifactStatus  `json:"review_plan_status"`
+	ReportReady        bool            `json:"report_ready"`
+	ReviewPlanReady    bool            `json:"review_plan_ready"`
+	Report             json.RawMessage `json:"-"`
+	ReviewPlan         json.RawMessage `json:"-"`
+	ReportMarkdown     string          `json:"report_markdown,omitempty"`
+	ReviewPlanMarkdown string          `json:"review_plan_markdown,omitempty"`
+	LastEventID        int64           `json:"last_event_id,string"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
 }
 
 type Event struct {
@@ -146,16 +154,32 @@ type Score struct {
 }
 
 type JDAnalysis struct {
-	Position        string   `json:"position"`
-	ExperienceLevel string   `json:"experience_level"`
-	FocusAreas      []string `json:"focus_areas"`
+	Position         string   `json:"position"`
+	Company          string   `json:"company"`
+	ExperienceLevel  string   `json:"experience_level"`
+	RequiredSkills   []string `json:"required_skills"`
+	Responsibilities []string `json:"responsibilities"`
+	KeyTopics        []string `json:"key_topics"`
 }
 
-type MatchResult struct {
-	OverallScore  float64  `json:"overall_score"`
-	MatchedSkills []string `json:"matched_skills"`
-	Gaps          []string `json:"gaps"`
+type SkillMatch struct {
+	SkillName  string  `json:"skill_name"`
+	Required   bool    `json:"required"`
+	Matched    bool    `json:"matched"`
+	MatchScore float64 `json:"match_score"`
+	Evidence   string  `json:"evidence"`
 }
+
+type ResumeMatchResult struct {
+	OverallScore float64      `json:"overall_score"`
+	SkillMatch   []SkillMatch `json:"skill_match"`
+	Strengths    []string     `json:"strengths"`
+	Weaknesses   []string     `json:"weaknesses"`
+	FocusAreas   []string     `json:"focus_areas"`
+	ResumeGaps   []string     `json:"resume_gaps"`
+}
+
+type MatchResult = ResumeMatchResult
 
 type Artifact struct {
 	Markdown string          `json:"markdown"`
