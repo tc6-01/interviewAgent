@@ -45,8 +45,8 @@ type Orchestrator struct {
 	longTermMem  *memory.LongTermMemory
 
 	// RAG 多路召回
-	milvusStore *rag.MilvusStore // Milvus 向量存储（支持按用户过滤）
-	bm25Manager *rag.BM25Manager // BM25 按用户管理
+	milvusStore *rag.MilvusStore   // Milvus 向量存储（支持按用户过滤）
+	bm25Manager *rag.BM25Manager   // BM25 按用户管理
 	reranker    rag.RerankStrategy // 重排策略（LLM / cross-encoder / none，可切换）
 
 	// 持久化
@@ -334,7 +334,7 @@ func (o *Orchestrator) nodeQuestionPlan(ctx context.Context, ic *interviewCtx) e
 					reranked = docs
 				}
 				topDoc := reranked[0]
-				log.Printf("[RAG] 方向 %d 匹配到题库原题 [%s]: %s", i+1, topDoc.ID, topDoc.Content)
+				log.Printf("[RAG] 方向 %d 已匹配题库候选", i+1)
 
 				// 直接用题库原题构建题目，不经过 LLM
 				questionContent := topDoc.Content

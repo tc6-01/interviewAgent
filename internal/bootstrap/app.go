@@ -15,6 +15,7 @@ import (
 	"interview-agent/internal/questionbank"
 	"interview-agent/internal/runtimeconfig"
 	"interview-agent/internal/session"
+	"interview-agent/internal/webui"
 	"interview-agent/internal/workflow"
 )
 
@@ -68,7 +69,13 @@ func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*A
 	if err != nil {
 		return fail(err)
 	}
-	server := httpapi.New(cfg, sessions, logger)
+	server := httpapi.New(cfg, sessions, logger,
+		httpapi.WithSecurity(httpapi.SecurityConfig{
+			Mode: cfg.AuthMode, JWTSecret: cfg.JWTSecret, SubjectIDPepper: cfg.SubjectIDPepper,
+			AllowedOrigins: cfg.CORSOrigins, CookieSecure: cfg.CookieSecure,
+		}),
+		httpapi.WithWeb(webui.Handler()),
+	)
 	return &App{handler: server.Handler(), store: store, index: index, sessions: sessions}, nil
 }
 

@@ -110,7 +110,7 @@ func Load() (*Config, error) {
 			Token: os.Getenv("GITHUB_TOKEN"),
 		},
 		JWT: JWTConfig{
-			Secret: getEnvDefault("JWT_SECRET", "interview-agent-default-secret"),
+			Secret: os.Getenv("JWT_SECRET"),
 		},
 	}, nil
 }

@@ -1,4 +1,4 @@
-.PHONY: dev run build test vet check questionbank-generate questionbank-validate legacy-run infra-up infra-down infra-status clean
+.PHONY: dev run build test test-race vet check smoke security-scan web-install web-check web-build questionbank-generate questionbank-validate legacy-run infra-up infra-down infra-status clean
 
 # Default local server: SQLite + BM25, no Docker or external databases.
 dev:
@@ -12,13 +12,32 @@ build:
 test:
 	go test ./...
 
+test-race:
+	go test -race ./...
+
 vet:
 	go vet ./...
 
-check: questionbank-validate
+web-install:
+	cd interview-agent-web && npm ci
+
+web-build:
+	cd interview-agent-web && VITE_API_MODE=real npm run build
+
+web-check: web-install
+	cd interview-agent-web && npm run typecheck && npm run test:run && VITE_API_MODE=real npm run build
+
+smoke:
+	./scripts/api-smoke.sh
+
+security-scan:
+	./scripts/security-scan.sh
+
+check: questionbank-validate security-scan
 	go build ./...
 	go vet ./...
 	go test ./...
+	go test -race ./...
 
 questionbank-generate:
 	go run ./cmd/questionbank-gen

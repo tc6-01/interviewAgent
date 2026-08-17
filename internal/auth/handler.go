@@ -57,7 +57,8 @@ func (h *Handler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{Token: token, Username: req.Username})
+	setTokenCookie(w, r, token)
+	writeJSON(w, http.StatusOK, authResponse{Username: req.Username})
 }
 
 // HandleLogin 处理登录请求
@@ -83,7 +84,15 @@ func (h *Handler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{Token: token, Username: req.Username})
+	setTokenCookie(w, r, token)
+	writeJSON(w, http.StatusOK, authResponse{Username: req.Username})
+}
+
+func setTokenCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: "interview_token", Value: token, Path: "/", MaxAge: 7 * 24 * 60 * 60,
+		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

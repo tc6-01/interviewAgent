@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
+
 	"interview-agent/internal/adapters/bm25"
 	llmadapter "interview-agent/internal/adapters/llm/openai"
 	"interview-agent/internal/adapters/sqlite"
@@ -32,7 +34,7 @@ func TestInterviewHTTPAndSSEContract(t *testing.T) {
 	lastID := snapshot.LastEventID
 
 	liveRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/interviews/"+created.InterviewID+"/events", nil)
-	liveRequest.Header.Set("X-Subject-ID", "subject-a")
+	setBearer(t, liveRequest, "subject-a")
 	liveRequest.Header.Set("Last-Event-ID", fmt.Sprint(lastID))
 	liveResponse, err := client.Do(liveRequest)
 	if err != nil {
@@ -70,7 +72,7 @@ func TestInterviewHTTPAndSSEContract(t *testing.T) {
 	}
 
 	reconnectRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/interviews/"+created.InterviewID+"/events", nil)
-	reconnectRequest.Header.Set("X-Subject-ID", "subject-a")
+	setBearer(t, reconnectRequest, "subject-a")
 	reconnectRequest.Header.Set("Last-Event-ID", fmt.Sprint(lastID))
 	reconnectResponse, err := client.Do(reconnectRequest)
 	if err != nil {
@@ -109,7 +111,11 @@ func TestInterviewHTTPAndSSEContract(t *testing.T) {
 	if final.Progress.Answered != 15 || !final.ReportReady || !final.ReviewPlanReady {
 		t.Fatalf("final snapshot = %#v", final)
 	}
-	if _, err := manager.Snapshot(context.Background(), "subject-a", created.InterviewID); err != nil {
+	storedSubject, err := jwtSubject("Bearer "+signedTestToken(t, "subject-a"), testJWTSecret, testSubjectIDPepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Snapshot(context.Background(), storedSubject, created.InterviewID); err != nil {
 		t.Fatalf("repository-backed final snapshot: %v", err)
 	}
 }
@@ -160,6 +166,12 @@ func createInterviewHTTP(t *testing.T, client *http.Client, baseURL, subject str
 }
 
 func newInterviewTestServer(t *testing.T, idleTimeout time.Duration) (*httptest.Server, *session.Manager) {
+	return newInterviewTestServerWithSecurity(t, idleTimeout, SecurityConfig{
+		Mode: "jwt", JWTSecret: testJWTSecret, SubjectIDPepper: testSubjectIDPepper,
+	})
+}
+
+func newInterviewTestServerWithSecurity(t *testing.T, idleTimeout time.Duration, security SecurityConfig) (*httptest.Server, *session.Manager) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "interview.db"))
@@ -183,7 +195,7 @@ func newInterviewTestServer(t *testing.T, idleTimeout time.Duration) (*httptest.
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(New(fakeConfig{}, manager, discardLogger()).Handler())
+	server := httptest.NewServer(New(fakeConfig{}, manager, discardLogger(), WithSecurity(security)).Handler())
 	t.Cleanup(func() { server.Close(); _ = manager.Close(); index.Close(); _ = store.Close() })
 	return server, manager
 }
@@ -193,7 +205,7 @@ func postJSON(t *testing.T, client *http.Client, url, subject string, body any) 
 	payload, _ := json.Marshal(body)
 	request, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Subject-ID", subject)
+	setBearer(t, request, subject)
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -204,12 +216,36 @@ func postJSON(t *testing.T, client *http.Client, url, subject string, body any) 
 func getWithSubject(t *testing.T, client *http.Client, url, subject string) *http.Response {
 	t.Helper()
 	request, _ := http.NewRequest(http.MethodGet, url, nil)
-	request.Header.Set("X-Subject-ID", subject)
+	setBearer(t, request, subject)
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return response
+}
+
+const testJWTSecret = "test-only-secret-with-at-least-thirty-two-characters"
+const testSubjectIDPepper = "test-only-stable-subject-pepper-at-least-thirty-two-characters"
+
+func setBearer(t *testing.T, request *http.Request, subject string) {
+	t.Helper()
+	request.Header.Set("Authorization", "Bearer "+signedTestToken(t, subject))
+}
+
+func signedTestToken(t *testing.T, subject string) string {
+	return signedTestTokenWithSecret(t, subject, testJWTSecret)
+}
+
+func signedTestTokenWithSecret(t *testing.T, subject, secret string) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Subject: subject, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now()),
+	})
+	signed, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
 }
 
 func waitForHTTPSnapshot(t *testing.T, client *http.Client, baseURL, subject, interviewID string, ready func(session.Snapshot) bool) session.Snapshot {

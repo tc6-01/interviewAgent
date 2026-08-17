@@ -15,6 +15,11 @@ func TestLoadRequiresOnlyLLMAPIKey(t *testing.T) {
 	t.Setenv("LLM_TIMEOUT", "")
 	t.Setenv("LLM_MAX_CONCURRENCY", "")
 	t.Setenv("SHUTDOWN_TIMEOUT", "")
+	t.Setenv("AUTH_MODE", "")
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("SUBJECT_ID_PEPPER", "")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "")
+	t.Setenv("COOKIE_SECURE", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -28,6 +33,50 @@ func TestLoadRequiresOnlyLLMAPIKey(t *testing.T) {
 	}
 	if cfg.LLMTimeout != defaultLLMTimeout || cfg.ShutdownTimeout != defaultShutdown {
 		t.Fatalf("unexpected duration defaults: %+v", cfg)
+	}
+	if cfg.AuthMode != "anonymous" || cfg.JWTSecret != "" || cfg.SubjectIDPepper != "" || len(cfg.CORSOrigins) != 0 {
+		t.Fatalf("unexpected anonymous security defaults: %+v", cfg)
+	}
+}
+
+func TestValidateAuthenticationAndCORSModes(t *testing.T) {
+	base := Config{
+		HTTPAddr: ":9090", SQLitePath: ":memory:", LLMBaseURL: "https://provider.example/v1", LLMAPIKey: "test-key",
+		LLMModel: "test-model", LLMTimeout: time.Second, LLMConcurrency: 1, ShutdownTimeout: time.Second,
+	}
+
+	jwt := base
+	jwt.AuthMode = "jwt"
+	jwt.JWTSecret = "a-secret-longer-than-thirty-two-characters"
+	jwt.SubjectIDPepper = "a-stable-pepper-longer-than-thirty-two-characters"
+	jwt.CORSOrigins = []string{"https://app.example.com"}
+	if err := jwt.Validate(); err != nil {
+		t.Fatalf("valid jwt config: %v", err)
+	}
+
+	shortSecret := jwt
+	shortSecret.JWTSecret = "fixed-secret"
+	if err := shortSecret.Validate(); err == nil || !strings.Contains(err.Error(), "JWT_SECRET") {
+		t.Fatalf("short secret error=%v", err)
+	}
+
+	missingPepper := jwt
+	missingPepper.SubjectIDPepper = ""
+	if err := missingPepper.Validate(); err == nil || !strings.Contains(err.Error(), "SUBJECT_ID_PEPPER") {
+		t.Fatalf("missing subject pepper error=%v", err)
+	}
+
+	anonymousCORS := base
+	anonymousCORS.AuthMode = "anonymous"
+	anonymousCORS.CORSOrigins = []string{"https://app.example.com"}
+	if err := anonymousCORS.Validate(); err == nil || !strings.Contains(err.Error(), "AUTH_MODE=jwt") {
+		t.Fatalf("anonymous CORS error=%v", err)
+	}
+
+	wildcard := jwt
+	wildcard.CORSOrigins = []string{"*"}
+	if err := wildcard.Validate(); err == nil || !strings.Contains(err.Error(), "CORS_ALLOWED_ORIGINS") {
+		t.Fatalf("wildcard CORS error=%v", err)
 	}
 }
 

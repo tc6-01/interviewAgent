@@ -31,25 +31,21 @@ func LoadFile(path string) (string, error) {
 	case ".doc":
 		return "", fmt.Errorf("loader: 不支持 .doc 格式（Word 97-2003），请转换为 .docx")
 	default:
-		// 尝试当纯文本读取
-		return loadText(path)
+		return "", fmt.Errorf("loader: 不支持的文件格式 %q", ext)
 	}
 }
 
 // ParseBase64File 解码 base64 文件并提取文本
 func ParseBase64File(filename string, base64Data string) (string, error) {
+	if base64.StdEncoding.DecodedLen(len(base64Data)) > MaxDocumentBytes {
+		return "", fmt.Errorf("base64 文件超过 10 MB 限制")
+	}
 	data, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return "", fmt.Errorf("base64 解码失败: %w", err)
 	}
 
-	tmpPath := filepath.Join(os.TempDir(), "ia-upload-"+filename)
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return "", fmt.Errorf("写入临时文件失败: %w", err)
-	}
-	defer os.Remove(tmpPath)
-
-	return LoadFile(tmpPath)
+	return ParseDocumentBytes(filename, "", data)
 }
 
 // loadText 读取纯文本文件

@@ -3,6 +3,7 @@ package loader
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -38,6 +39,32 @@ func TestParseDocumentBytesRejectsInvalidFormatAndEmptyText(t *testing.T) {
 	}
 	if _, err := ParseDocumentBytes("resume.txt", "text/plain", []byte("  ")); err == nil || err.(*DocumentError).Code != "parse_failed" {
 		t.Fatalf("empty error=%v", err)
+	}
+}
+
+func TestParseDocumentBytesRejectsUnsafeNamesMIMEAndSize(t *testing.T) {
+	tests := []struct {
+		name, filename, mime string
+		data                 []byte
+		code                 string
+	}{
+		{name: "path traversal", filename: "../resume.txt", mime: "text/plain", data: []byte("resume"), code: "invalid_filename"},
+		{name: "windows path", filename: `..\\resume.txt`, mime: "text/plain", data: []byte("resume"), code: "invalid_filename"},
+		{name: "generic binary mime", filename: "resume.txt", mime: "application/octet-stream", data: []byte("resume"), code: "unsupported_format"},
+		{name: "spoofed pdf", filename: "resume.pdf", mime: "application/pdf", data: []byte("not a pdf"), code: "unsupported_format"},
+		{name: "oversized", filename: "resume.txt", mime: "text/plain", data: make([]byte, MaxDocumentBytes+1), code: "invalid_size"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ParseDocumentBytes(test.filename, test.mime, test.data)
+			var documentErr *DocumentError
+			if !errors.As(err, &documentErr) {
+				t.Fatalf("error=%v, want DocumentError %q", err, test.code)
+			}
+			if documentErr.Code != test.code {
+				t.Fatalf("error=%v code=%q, want %q", err, documentErr.Code, test.code)
+			}
+		})
 	}
 }
 

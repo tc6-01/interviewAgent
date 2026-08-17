@@ -9,7 +9,7 @@ InterviewAgent 使用 Go 构建，目标是完整覆盖面试方向生成、检�
 
 ## 5 分钟本地启动
 
-前置条件：Go 1.26+ 和一个 OpenAI-compatible API Key。默认配置使用 DashScope `qwen-plus`，使用其他兼容供应商时同时修改 Base URL 与模型名。
+前置条件：Go 1.26.6+ 和一个 OpenAI-compatible API Key。默认配置使用 DashScope `qwen-plus`，使用其他兼容供应商时同时修改 Base URL 与模型名。
 
 ```bash
 git clone https://github.com/tc6-01/interviewAgent.git interview-agent
@@ -18,6 +18,8 @@ cp .env.example .env
 # 编辑 .env，只需填写 LLM_API_KEY
 make dev
 ```
+
+浏览器打开 <http://localhost:9090> 即可使用内嵌 React Web；无需另起静态服务器。默认匿名模式会自动下发 HttpOnly、SameSite=Lax 主体 Cookie。
 
 进程启动后无需调用 LLM 即可检查：
 
@@ -65,6 +67,11 @@ internal/adapters/{sqlite,bm25,llm/openai}
 | `LLM_MODEL` | 否 | `qwen-plus` | 默认模型 |
 | `HTTP_ADDR` | 否 | `:9090` | HTTP 监听地址 |
 | `SQLITE_PATH` | 否 | `data/interview.db` | SQLite 文件；测试可用 `:memory:` |
+| `AUTH_MODE` | 否 | `anonymous` | `anonymous` 使用同源主体 Cookie；`jwt` 仅接受 Bearer |
+| `JWT_SECRET` | JWT 模式是 | 无 | JWT HMAC 密钥，至少 32 字符；无固定默认值 |
+| `SUBJECT_ID_PEPPER` | JWT 模式是 | 无 | 稳定主体派生密钥，至少 32 字符；不得随 JWT 密钥轮换 |
+| `CORS_ALLOWED_ORIGINS` | 否 | 空 | 仅 JWT 模式可用的显式逗号分隔白名单，不支持 `*` |
+| `COOKIE_SECURE` | 否 | `false` | HTTPS 匿名部署设为 `true` |
 | `LLM_TIMEOUT` | 否 | `60s` | 单次模型请求超时 |
 | `LLM_MAX_CONCURRENCY` | 否 | `4` | 进程级 LLM 并发上限 |
 | `SHUTDOWN_TIMEOUT` | 否 | `10s` | 优雅关停超时 |
@@ -83,6 +90,9 @@ make check
 go build ./...
 go vet ./...
 go test ./...
+go test -race ./...
+make smoke
+make security-scan
 ```
 
 测试脚手架包含配置校验、SQLite 初始化、健康/就绪语义、完整轻量装配和默认依赖图检查。
@@ -95,6 +105,29 @@ make questionbank-validate  # 校验 schema、题型枚举与推广噪声
 ```
 
 用户题库使用独立的 `user:{subject_id}` scope，按主体、文件名和内容 SHA-256 幂等替换；删除时同步更新 SQLite 与进程内索引。默认检索不依赖向量服务，缺题通过显式 LLM fallback 接口补齐。
+
+题库权威格式位于 `internal/questionbank/assets/schema.json`，每个题目必须包含 `id`、`type`、`topic`、`text`、`answer`、`source`；`type` 仅允许 `basic`、`experience`、`design`。修改后运行 `make questionbank-generate questionbank-validate`。
+
+## 仓库目录
+
+```text
+cmd/interview-server/          默认单二进制入口
+internal/httpapi/              REST、SSE、匿名/JWT 与 CORS 边界
+internal/session/              Actor、会话状态与重启清扫
+internal/workflow/             Eino DAG 与报告/复习计划
+internal/adapters/             SQLite、BM25、LLM 适配器
+internal/questionbank/assets/  内置题库、schema 与生成资产
+internal/webui/dist/           以 go:embed 打入二进制的生产 React 产物
+interview-agent-web/           React/Vite 源码；开发代理到 :9090
+scripts/                       API smoke 与安全扫描门禁
+```
+
+## 身份与部署边界
+
+- 默认匿名部署必须同源：Cookie 为 HttpOnly、SameSite=Lax，服务端忽略客户端自填的 `X-Subject-ID`。
+- JWT 模式的 REST 与 SSE 都使用 `Authorization: Bearer <token>`；跨源仅在来源命中 `CORS_ALLOWED_ORIGINS` 时开放，且不发送 Cookie。
+- JWT 验签使用 `JWT_SECRET`，稳定 storage subject 使用独立的 `SUBJECT_ID_PEPPER`。轮换 `JWT_SECRET` 时保持 pepper 不变；从旧版本升级时，先将 `SUBJECT_ID_PEPPER` 设为升级前的 `JWT_SECRET`，验证同一 `sub` 仍可访问历史数据后再轮换 JWT 密钥。轮换 pepper 必须配套主体 ID 数据迁移，不能直接修改配置。
+- 生产 Web 由 `go:embed` 单二进制同源提供；Vite 仅用于开发代理。GitHub Pages 只能发布 `VITE_API_MODE=mock` 的静态演示，不能作为正式匿名部署。
 
 ## MVP API 闭环
 
@@ -136,6 +169,32 @@ make infra-up
 ```
 
 它们不会成为轻量服务器的启动条件。
+
+## Web 前端
+
+前端默认启用内置 Mock，可在没有后端和密钥时独立体验完整的固定 15 题流程：
+
+```bash
+cd interview-agent-web
+npm ci             # 按锁文件确定性安装依赖
+npm run dev        # 启动开发服务器
+```
+
+启动后访问 http://localhost:5173 即可使用。联调真实 HTTP/SSE 后端时执行：
+
+```bash
+VITE_API_MODE=real npm run dev
+```
+
+静态构建：
+
+```bash
+npm run typecheck
+npm run test:run
+VITE_API_MODE=mock npm run build
+```
+
+生产产物写入 `internal/webui/dist/` 并由 Go 服务同源嵌入。GitHub Pages 静态 Mock 预览需临时设置 Vite 输出目录或复制构建产物；它不承载匿名生产数据。完整接入说明见 [`interview-agent-web/README.md`](interview-agent-web/README.md)。
 
 ## 旧 CLI（迁移期）
 

@@ -27,6 +27,11 @@ const (
 type Config struct {
 	HTTPAddr        string
 	SQLitePath      string
+	AuthMode        string
+	JWTSecret       string
+	SubjectIDPepper string
+	CORSOrigins     []string
+	CookieSecure    bool
 	LLMBaseURL      string
 	LLMAPIKey       string
 	LLMModel        string
@@ -52,9 +57,19 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	cookieSecure, err := boolEnv("COOKIE_SECURE", false)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		HTTPAddr:        envOrDefault("HTTP_ADDR", defaultHTTPAddr),
 		SQLitePath:      envOrDefault("SQLITE_PATH", defaultSQLitePath),
+		AuthMode:        envOrDefault("AUTH_MODE", "anonymous"),
+		JWTSecret:       strings.TrimSpace(os.Getenv("JWT_SECRET")),
+		SubjectIDPepper: strings.TrimSpace(os.Getenv("SUBJECT_ID_PEPPER")),
+		CORSOrigins:     splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		CookieSecure:    cookieSecure,
 		LLMBaseURL:      envOrDefault("LLM_BASE_URL", defaultLLMBaseURL),
 		LLMAPIKey:       strings.TrimSpace(os.Getenv("LLM_API_KEY")),
 		LLMModel:        envOrDefault("LLM_MODEL", defaultLLMModel),
@@ -75,6 +90,34 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.SQLitePath) == "" {
 		return fmt.Errorf("config: SQLITE_PATH must not be empty")
+	}
+	authMode := strings.TrimSpace(c.AuthMode)
+	if authMode == "" {
+		authMode = "anonymous"
+	}
+	switch authMode {
+	case "anonymous":
+		if len(c.CORSOrigins) > 0 {
+			return fmt.Errorf("config: CORS_ALLOWED_ORIGINS requires AUTH_MODE=jwt")
+		}
+	case "jwt":
+		if len(c.JWTSecret) < 32 {
+			return fmt.Errorf("config: JWT_SECRET must contain at least 32 characters when AUTH_MODE=jwt")
+		}
+		if len(c.SubjectIDPepper) < 32 {
+			return fmt.Errorf("config: SUBJECT_ID_PEPPER must contain at least 32 characters when AUTH_MODE=jwt")
+		}
+	default:
+		return fmt.Errorf("config: AUTH_MODE must be anonymous or jwt")
+	}
+	for _, origin := range c.CORSOrigins {
+		parsedOrigin, err := url.Parse(origin)
+		if err != nil || parsedOrigin.Scheme == "" || parsedOrigin.Host == "" || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" || origin == "*" {
+			return fmt.Errorf("config: invalid CORS_ALLOWED_ORIGINS entry %q", origin)
+		}
+		if parsedOrigin.Scheme != "http" && parsedOrigin.Scheme != "https" {
+			return fmt.Errorf("config: CORS_ALLOWED_ORIGINS entries must use http(s)")
+		}
 	}
 	if strings.TrimSpace(c.LLMAPIKey) == "" {
 		return fmt.Errorf("config: LLM_API_KEY is required")
@@ -127,4 +170,26 @@ func intEnv(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("config: %s: %w", key, err)
 	}
 	return parsed, nil
+}
+
+func boolEnv(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("config: %s: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func splitCSV(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
