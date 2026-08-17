@@ -86,6 +86,15 @@ go test ./...
 
 测试脚手架包含配置校验、SQLite 初始化、健康/就绪语义、完整轻量装配和默认依赖图检查。
 
+内置 Go 题库已离线清洗为结构化 JSON，启动时按版本和 SHA-256 幂等装载到 SQLite，并重建进程内 `builtin` BM25 scope。题库维护命令：
+
+```bash
+make questionbank-generate  # 从迁移源生成结构化资产
+make questionbank-validate  # 校验 schema、题型枚举与推广噪声
+```
+
+用户题库使用独立的 `user:{subject_id}` scope，按主体、文件名和内容 SHA-256 幂等替换；删除时同步更新 SQLite 与进程内索引。默认检索不依赖向量服务，缺题通过显式 LLM fallback 接口补齐。
+
 ## Docker 与增强部署
 
 Docker 不是本地开发前置。需要便携单容器时：

@@ -11,6 +11,7 @@ require (
 	github.com/cloudwego/eino-ext/components/retriever/milvus v0.0.0-20260424065505-3b3b8b5db0d0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
@@ -42,7 +43,6 @@ require (
 	github.com/getsentry/sentry-go v0.12.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
