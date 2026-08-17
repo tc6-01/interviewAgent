@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,11 +31,14 @@ func TestAppServesHealthAndReadinessWithoutProviderCall(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.Close() })
 
-	for _, path := range []string{"/healthz", "/readyz"} {
+	for _, path := range []string{"/healthz", "/readyz", "/"} {
 		recorder := httptest.NewRecorder()
 		app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET %s status = %d; body=%s", path, recorder.Code, recorder.Body.String())
+		}
+		if path == "/" && !strings.Contains(recorder.Body.String(), "InterviewAgent") {
+			t.Fatalf("embedded web shell missing: %s", recorder.Body.String())
 		}
 	}
 }

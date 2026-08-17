@@ -19,9 +19,9 @@ import (
 )
 
 var (
-	ErrUserExists       = errors.New("用户名已存在")
+	ErrUserExists        = errors.New("用户名已存在")
 	ErrInvalidCredential = errors.New("用户名或密码错误")
-	ErrInvalidInput     = errors.New("参数不合法")
+	ErrInvalidInput      = errors.New("参数不合法")
 )
 
 // Service 认证服务
@@ -32,6 +32,9 @@ type Service struct {
 
 // NewService 创建认证服务，自动建表
 func NewService(db *sql.DB, jwtSecret string) (*Service, error) {
+	if len(jwtSecret) < 32 {
+		return nil, fmt.Errorf("auth: JWT_SECRET must contain at least 32 characters")
+	}
 	s := &Service{
 		db:        db,
 		jwtSecret: []byte(jwtSecret),

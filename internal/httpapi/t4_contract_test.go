@@ -199,7 +199,7 @@ func newT4ContractServer(t *testing.T, engine session.Engine) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(New(fakeConfig{}, manager, discardLogger()).Handler())
+	server := httptest.NewServer(New(fakeConfig{}, manager, discardLogger(), WithSecurity(SecurityConfig{Mode: "jwt", JWTSecret: testJWTSecret})).Handler())
 	t.Cleanup(func() { server.Close(); _ = manager.Close(); index.Close(); _ = store.Close() })
 	return server
 }
@@ -209,7 +209,7 @@ func patchJSON(t *testing.T, client *http.Client, url, subject string, body any)
 	payload, _ := json.Marshal(body)
 	request, _ := http.NewRequest(http.MethodPatch, url, bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Subject-ID", subject)
+	setBearer(t, request, subject)
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)

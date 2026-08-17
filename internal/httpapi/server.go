@@ -47,9 +47,28 @@ type Server struct {
 	handler http.Handler
 }
 
-func New(config ConfigValidator, sessions ReadinessReporter, logger *slog.Logger) *Server {
+type Option func(*serverOptions)
+
+type serverOptions struct {
+	security SecurityConfig
+	web      http.Handler
+}
+
+func WithSecurity(config SecurityConfig) Option {
+	return func(options *serverOptions) { options.security = config }
+}
+
+func WithWeb(handler http.Handler) Option {
+	return func(options *serverOptions) { options.web = handler }
+}
+
+func New(config ConfigValidator, sessions ReadinessReporter, logger *slog.Logger, opts ...Option) *Server {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	options := serverOptions{security: SecurityConfig{Mode: "anonymous"}}
+	for _, option := range opts {
+		option(&options)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -69,7 +88,10 @@ func New(config ConfigValidator, sessions ReadinessReporter, logger *slog.Logger
 		mux.HandleFunc("GET /api/v1/interviews/{id}/review-plan", getReviewPlan(interviews))
 		mux.HandleFunc("POST /api/v1/interviews/{id}/review-plan/retry", retryReviewPlan(interviews))
 	}
-	return &Server{handler: mux}
+	if options.web != nil {
+		mux.Handle("GET /", options.web)
+	}
+	return &Server{handler: secureHandler(options.security, mux)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -185,12 +207,17 @@ func parseDocument(w http.ResponseWriter, r *http.Request) {
 	var kind, text string
 	source := responseSource{Type: "text"}
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-		const maxDocumentBytes = 10 << 20
-		r.Body = http.MaxBytesReader(w, r.Body, maxDocumentBytes+(1<<20))
-		if err := r.ParseMultipartForm(maxDocumentBytes); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, loader.MaxDocumentBytes+(1<<20))
+		if err := r.ParseMultipartForm(loader.MaxDocumentBytes); err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, "document_too_large", "文件不能超过 10 MB", nil)
+				return
+			}
 			writeAPIError(w, http.StatusBadRequest, "invalid_document", "无法解析上传文件", nil)
 			return
 		}
+		defer r.MultipartForm.RemoveAll()
 		kind = strings.TrimSpace(r.FormValue("kind"))
 		file, header, err := r.FormFile("file")
 		if err != nil {
@@ -198,12 +225,12 @@ func parseDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		body, err := io.ReadAll(io.LimitReader(file, maxDocumentBytes+1))
+		body, err := io.ReadAll(io.LimitReader(file, loader.MaxDocumentBytes+1))
 		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_document", "无法读取上传文件", nil)
 			return
 		}
-		if len(body) > maxDocumentBytes {
+		if len(body) > loader.MaxDocumentBytes {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "document_too_large", "文件不能超过 10 MB", nil)
 			return
 		}
@@ -212,7 +239,7 @@ func parseDocument(w http.ResponseWriter, r *http.Request) {
 			var documentErr *loader.DocumentError
 			if errors.As(err, &documentErr) {
 				status := http.StatusUnprocessableEntity
-				if documentErr.Code == "unsupported_format" {
+				if documentErr.Code == "unsupported_format" || documentErr.Code == "invalid_filename" || documentErr.Code == "invalid_size" || documentErr.Code == "unsafe_archive" {
 					status = http.StatusBadRequest
 				}
 				writeAPIError(w, status, documentErr.Code, documentErr.Message, nil)
@@ -540,19 +567,8 @@ func terminalEvent(eventType string) bool {
 	return eventType == "completed" || eventType == "terminated" || eventType == "failed"
 }
 
-func resolveSubject(w http.ResponseWriter, r *http.Request) (string, error) {
-	if subjectID := strings.TrimSpace(r.Header.Get("X-Subject-ID")); subjectID != "" {
-		return subjectID, nil
-	}
-	if cookie, err := r.Cookie("interview_subject"); err == nil && strings.TrimSpace(cookie.Value) != "" {
-		return cookie.Value, nil
-	}
-	if r.Header.Get("Authorization") != "" {
-		return "", errors.New("JWT subject resolution is not installed")
-	}
-	subjectID := "anon_" + uuid.NewString()
-	http.SetCookie(w, &http.Cookie{Name: "interview_subject", Value: subjectID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
-	return subjectID, nil
+func resolveSubject(_ http.ResponseWriter, r *http.Request) (string, error) {
+	return subjectFromRequest(r)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {

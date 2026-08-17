@@ -110,7 +110,7 @@ func (gs *GitHubSearcher) SearchRepos(ctx context.Context, query string, limit i
 				StargazersCount int    `json:"stargazers_count"`
 			}
 			if err2 := json.Unmarshal([]byte(tc.Text), &items); err2 != nil {
-				log.Printf("[MCP/GitHub] 解析搜索结果失败，原始内容: %s", tc.Text[:min(200, len(tc.Text))])
+				log.Printf("[MCP/GitHub] 解析搜索结果失败")
 				continue
 			}
 			for _, item := range items {

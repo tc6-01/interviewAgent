@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	milvusIndexer "github.com/cloudwego/eino-ext/components/indexer/milvus"
+	milvusRetriever "github.com/cloudwego/eino-ext/components/retriever/milvus"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
-	milvusIndexer "github.com/cloudwego/eino-ext/components/indexer/milvus"
-	milvusRetriever "github.com/cloudwego/eino-ext/components/retriever/milvus"
 	"github.com/milvus-io/milvus-sdk-go/v2/client"
 	"github.com/milvus-io/milvus-sdk-go/v2/entity"
 )
@@ -228,7 +228,7 @@ func (s *MilvusStore) DeleteByUserID(ctx context.Context, userID string) error {
 	if err := s.client.Delete(ctx, CollectionName, "", expr); err != nil {
 		return fmt.Errorf("milvus: delete by user_id %s: %w", userID, err)
 	}
-	log.Printf("[Milvus] 已删除用户 %s 的所有题目", userID)
+	log.Printf("[Milvus] 已删除主体题库")
 	return nil
 }
 
@@ -238,7 +238,7 @@ func (s *MilvusStore) DeleteBySourceFile(ctx context.Context, userID, sourceFile
 	if err := s.client.Delete(ctx, CollectionName, "", expr); err != nil {
 		return fmt.Errorf("milvus: delete by source_file: %w", err)
 	}
-	log.Printf("[Milvus] 已删除用户 %s 文件 %s 的题目", userID, sourceFile)
+	log.Printf("[Milvus] 已删除主体来源题库")
 	return nil
 }
 
@@ -285,13 +285,13 @@ func (s *MilvusStore) LoadQuestionsFromFile(ctx context.Context, userID string, 
 	}
 
 	var questions []struct {
-		ID        string   `json:"id"`
-		Content   string   `json:"content"`
-		Type      string   `json:"type"`
-		Difficulty string  `json:"difficulty"`
-		Skills    []string `json:"skills"`
-		FollowUps []string `json:"follow_ups"`
-		Reference string   `json:"reference"`
+		ID         string   `json:"id"`
+		Content    string   `json:"content"`
+		Type       string   `json:"type"`
+		Difficulty string   `json:"difficulty"`
+		Skills     []string `json:"skills"`
+		FollowUps  []string `json:"follow_ups"`
+		Reference  string   `json:"reference"`
 	}
 	if err := json.Unmarshal(data, &questions); err != nil {
 		return fmt.Errorf("milvus: parse file %s: %w", filePath, err)
