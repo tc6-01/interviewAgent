@@ -79,16 +79,77 @@ func newRuntimeForTest(t *testing.T, responses ...string) (*Engine, *queuedGatew
 
 func TestDirectionSchemaRepairRunsAtMostOnce(t *testing.T) {
 	runtime, gateway := newRuntimeForTest(t,
-		`{"position":"Go Engineer"}`,
+		`{"position":"Go Engineer","experience_level":"senior","focus_areas":["Go","distributed systems"],"matched_skills":["Go"],"gaps":[],"jd_analysis":{"position":"Go Engineer","company":"ACME","experience_level":"senior","required_skills":["Go"],"responsibilities":["build services"],"key_topics":["distributed systems"]},"resume_match_result":{"overall_score":90,"skill_match":[{"skill_name":"Go","required":true,"matched":true,"match_score":100,"evidence":"invented Kubernetes platform ownership"}],"strengths":["Go"],"weaknesses":[],"focus_areas":["distributed systems"],"resume_gaps":[]}}`,
 		`{"position":"Go Engineer","experience_level":"senior","focus_areas":["Go","distributed systems"],"matched_skills":["Go"],"gaps":[],"jd_analysis":{"position":"Go Engineer","company":"ACME","experience_level":"senior","required_skills":["Go"],"responsibilities":["build services"],"key_topics":["distributed systems"]},"resume_match_result":{"overall_score":90,"skill_match":[{"skill_name":"Go","required":true,"matched":true,"match_score":100,"evidence":"Five years building Go services"}],"strengths":["Go"],"weaknesses":[],"focus_areas":["distributed systems"],"resume_gaps":[]}}`,
 	)
-	direction, err := runtime.GenerateDirection(context.Background(), "subject", "jd fixture", "resume fixture")
+	direction, err := runtime.GenerateDirection(context.Background(), "subject", "jd fixture", "Five years building Go services")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if direction.Position != "Go Engineer" || len(direction.FocusAreas) != 2 || gateway.requests != 2 {
 		t.Fatalf("direction=%#v requests=%d", direction, gateway.requests)
 	}
+}
+
+func TestReportExcludesDegradedScoresFromAggregatesAndWeaknesses(t *testing.T) {
+	runtime, _ := newRuntimeForTest(t)
+
+	t.Run("mixed real and degraded scores", func(t *testing.T) {
+		artifact, err := runtime.Report(context.Background(), session.Snapshot{
+			InterviewID: "mixed",
+			QAHistory: []session.QARecord{
+				{PromptID: "real-basic", Number: 1, Kind: "primary", Type: "basic", Score: 80},
+				{PromptID: "degraded-basic", Number: 2, Kind: "primary", Type: "basic", Score: 0, ScoreDegraded: true, KeyPointsMissed: []string{"provider failure"}},
+				{PromptID: "real-experience", Number: 9, Kind: "primary", Type: "experience", Score: 60, KeyPointsMissed: []string{"capacity planning"}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report struct {
+			Overall    float64            `json:"overall_score"`
+			Dimensions map[string]float64 `json:"dimension_scores"`
+			Weaknesses []string           `json:"weaknesses"`
+			Evidence   []struct {
+				PromptIDs []string `json:"prompt_ids"`
+			} `json:"weakness_evidence"`
+		}
+		if err := json.Unmarshal(artifact.Value, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Overall != 70 || report.Dimensions["basic"] != 80 || report.Dimensions["experience"] != 60 {
+			t.Fatalf("aggregates include degraded score: %s", artifact.Value)
+		}
+		if len(report.Weaknesses) != 1 || len(report.Evidence) != 1 || len(report.Evidence[0].PromptIDs) != 1 || report.Evidence[0].PromptIDs[0] != "real-experience" {
+			t.Fatalf("degraded score produced weakness evidence: %s", artifact.Value)
+		}
+	})
+
+	t.Run("all scores degraded", func(t *testing.T) {
+		artifact, err := runtime.Report(context.Background(), session.Snapshot{
+			InterviewID: "all-degraded",
+			QAHistory: []session.QARecord{
+				{PromptID: "d1", Number: 1, Kind: "primary", Type: "basic", Score: 0, ScoreDegraded: true},
+				{PromptID: "d2", Number: 9, Kind: "primary", Type: "experience", Score: 0, ScoreDegraded: true},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var report struct {
+			Overall    float64            `json:"overall_score"`
+			Dimensions map[string]float64 `json:"dimension_scores"`
+			Strengths  []string           `json:"strengths"`
+			Weaknesses []string           `json:"weaknesses"`
+			Evidence   []map[string]any   `json:"weakness_evidence"`
+		}
+		if err := json.Unmarshal(artifact.Value, &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Overall != 0 || len(report.Dimensions) != 0 || len(report.Strengths) != 0 || len(report.Weaknesses) != 0 || len(report.Evidence) != 0 {
+			t.Fatalf("all-degraded report invented signal: %s", artifact.Value)
+		}
+	})
 }
 
 func TestReviewPlanReferencesWeakQuestionsSanitizesURLsAndAddsAdvancedDirections(t *testing.T) {
@@ -142,7 +203,7 @@ func TestDirectionFixtureP50(t *testing.T) {
 	for index := 0; index < 5; index++ {
 		runtime, _ := newRuntimeForTest(t, fixture)
 		started := time.Now()
-		if _, err := runtime.GenerateDirection(context.Background(), "subject", "jd fixture", "resume fixture"); err != nil {
+		if _, err := runtime.GenerateDirection(context.Background(), "subject", "jd fixture", "Go project"); err != nil {
 			t.Fatal(err)
 		}
 		durations = append(durations, time.Since(started))

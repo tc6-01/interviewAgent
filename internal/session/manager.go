@@ -134,10 +134,20 @@ func (m *Manager) UpdateDirection(ctx context.Context, subjectID, directionID st
 	if err := validateDirection(direction); err != nil {
 		return Direction{}, err
 	}
+	if err := validateDirectionEvidenceUpdate(direction.ResumeMatch, current.ResumeMatch); err != nil {
+		return Direction{}, err
+	}
 	return m.repository.UpdateDirection(ctx, subjectID, directionID, patch)
 }
 
 func (m *Manager) ConfirmDirection(ctx context.Context, subjectID, directionID string, expectedVersion int) (Direction, error) {
+	direction, err := m.repository.GetDirection(ctx, subjectID, directionID)
+	if err != nil {
+		return Direction{}, err
+	}
+	if err := validateDirection(direction); err != nil {
+		return Direction{}, err
+	}
 	return m.repository.ConfirmDirection(ctx, subjectID, directionID, expectedVersion)
 }
 
@@ -529,4 +539,36 @@ func validateDirection(direction Direction) error {
 		return fmt.Errorf("session: direction version must be positive")
 	}
 	return nil
+}
+
+func validateDirectionEvidenceUpdate(next, verified ResumeMatchResult) error {
+	verifiedQuotes := make([]string, 0, len(verified.SkillMatch))
+	for _, skill := range verified.SkillMatch {
+		if skill.Matched {
+			if quote := normalizeEvidenceQuote(skill.Evidence); quote != "" {
+				verifiedQuotes = append(verifiedQuotes, quote)
+			}
+		}
+	}
+	for _, skill := range next.SkillMatch {
+		if !skill.Matched {
+			continue
+		}
+		quote := normalizeEvidenceQuote(skill.Evidence)
+		matched := false
+		for _, verifiedQuote := range verifiedQuotes {
+			if strings.Contains(verifiedQuote, quote) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("session: matched skill evidence is required to use a verified resume quote")
+		}
+	}
+	return nil
+}
+
+func normalizeEvidenceQuote(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }

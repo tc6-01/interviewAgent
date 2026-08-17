@@ -44,6 +44,9 @@ type directionPayload struct {
 
 func (r *Engine) GenerateDirection(ctx context.Context, subjectID, jdText, resumeText string) (session.Direction, error) {
 	var payload directionPayload
+	directionValidator := func(value directionPayload) error {
+		return validateDirectionPayloadFromResume(value, resumeText)
+	}
 	graph := compose.NewGraph[string, string]()
 	if err := graph.AddLambdaNode("jd_resume_analysis", compose.InvokableLambda(func(nodeCtx context.Context, _ string) (string, error) {
 		started := time.Now()
@@ -52,7 +55,7 @@ func (r *Engine) GenerateDirection(ctx context.Context, subjectID, jdText, resum
 			Operation: "direction.generate", JSON: true,
 			SystemPrompt: "你是模拟面试方向规划器。仅返回 JSON，不复述完整简历或 JD。返回 position、experience_level、focus_areas、matched_skills、gaps、jd_analysis、resume_match_result。jd_analysis 必须含 position、company、experience_level、required_skills、responsibilities、key_topics；resume_match_result 必须含 overall_score、skill_match、strengths、weaknesses、focus_areas、resume_gaps。每个 matched=true 的 skill_match 必须提供来自简历原文的 evidence。所有数组字段必须存在。",
 			UserPrompt:   "JD:\n" + jdText + "\n\nResume:\n" + resumeText,
-		}, validateDirectionPayload)
+		}, directionValidator)
 	})); err != nil {
 		return session.Direction{}, fmt.Errorf("graph: add direction node: %w", err)
 	}
@@ -62,7 +65,7 @@ func (r *Engine) GenerateDirection(ctx context.Context, subjectID, jdText, resum
 		if err := json.Unmarshal([]byte(extractJSON(raw)), &payload); err != nil {
 			return "", fmt.Errorf("graph: decode direction: %w", err)
 		}
-		if err := validateDirectionPayload(payload); err != nil {
+		if err := directionValidator(payload); err != nil {
 			return "", err
 		}
 		return raw, nil
@@ -291,7 +294,7 @@ func (r *Engine) Report(_ context.Context, snapshot session.Snapshot) (session.A
 	weaknesses := make([]string, 0, 3)
 	evidence := make([]map[string]any, 0, 3)
 	for _, item := range sorted {
-		if item.Score >= 75 {
+		if item.ScoreDegraded || item.Score >= 75 {
 			continue
 		}
 		topic := fmt.Sprintf("第 %d 题失分点", item.Number)
@@ -307,7 +310,7 @@ func (r *Engine) Report(_ context.Context, snapshot session.Snapshot) (session.A
 	strengths := make([]string, 0, 3)
 	for index := len(sorted) - 1; index >= 0 && len(strengths) < 3; index-- {
 		item := sorted[index]
-		if item.Score < 75 {
+		if item.ScoreDegraded || item.Score < 75 {
 			continue
 		}
 		strengths = append(strengths, fmt.Sprintf("第 %d 题表现稳定（%.0f 分）", item.Number, item.Score))
@@ -419,8 +422,8 @@ func (r *Engine) completeStructured(ctx context.Context, request domain.LLMReque
 	}
 	repair := domain.LLMRequest{
 		Operation: request.Operation + ".repair", JSON: true,
-		SystemPrompt: "修复以下 JSON，使其严格满足原始字段和类型约束。只返回修复后的 JSON，不添加说明。",
-		UserPrompt:   response.Content,
+		SystemPrompt: "根据原始请求上下文修复以下 JSON，使其严格满足原始字段、类型和来源约束。只返回修复后的 JSON，不添加说明。",
+		UserPrompt:   "Original request:\n" + request.UserPrompt + "\n\nInvalid response:\n" + response.Content,
 	}
 	repaired, repairErr := r.agent.Complete(ctx, repair)
 	if repairErr != nil {
@@ -513,6 +516,27 @@ func validateDirectionPayload(value directionPayload) error {
 		}
 	}
 	return nil
+}
+
+func validateDirectionPayloadFromResume(value directionPayload, resumeText string) error {
+	if err := validateDirectionPayload(value); err != nil {
+		return err
+	}
+	resume := normalizeEvidenceQuote(resumeText)
+	for _, skill := range value.ResumeMatch.SkillMatch {
+		if !skill.Matched {
+			continue
+		}
+		evidence := normalizeEvidenceQuote(skill.Evidence)
+		if evidence == "" || !strings.Contains(resume, evidence) {
+			return fmt.Errorf("matched skill evidence must quote the resume source")
+		}
+	}
+	return nil
+}
+
+func normalizeEvidenceQuote(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
 func validateReviewPlanPayload(value reviewPlanPayload) error {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -119,6 +120,37 @@ func (r *memoryRepository) FailActiveSessions(_ context.Context, reason string) 
 		r.sessions[id] = snapshot
 	}
 	return nil
+}
+
+func TestManagerRejectsEditedDirectionEvidenceOutsideVerifiedResumeQuotes(t *testing.T) {
+	repository := newMemoryRepository()
+	manager := newTestManager(t, repository, time.Minute)
+	direction, err := manager.GenerateDirection(context.Background(), "subject-direction", "backend jd", "backend development")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalidMatch := direction.ResumeMatch
+	invalidMatch.SkillMatch = append([]SkillMatch(nil), direction.ResumeMatch.SkillMatch...)
+	invalidMatch.SkillMatch[0].Evidence = "invented Kubernetes platform ownership"
+	patch := DirectionPatch{
+		ExpectedVersion: direction.Version,
+		Position:        direction.Position, ExperienceLevel: direction.ExperienceLevel,
+		FocusAreas: direction.FocusAreas, MatchedSkills: direction.MatchedSkills, Gaps: direction.Gaps,
+		JDAnalysis: direction.JDAnalysis, ResumeMatch: invalidMatch,
+	}
+	if _, err := manager.UpdateDirection(context.Background(), direction.SubjectID, direction.ID, patch); err == nil || !strings.Contains(err.Error(), "verified resume quote") {
+		t.Fatalf("UpdateDirection() error = %v, want verified evidence rejection", err)
+	}
+
+	patch.ResumeMatch = direction.ResumeMatch
+	updated, err := manager.UpdateDirection(context.Background(), direction.SubjectID, direction.ID, patch)
+	if err != nil {
+		t.Fatalf("UpdateDirection() with original evidence error = %v", err)
+	}
+	if updated.Version != direction.Version+1 || updated.ResumeMatch.SkillMatch[0].Evidence != direction.ResumeMatch.SkillMatch[0].Evidence {
+		t.Fatalf("updated direction = %#v", updated)
+	}
 }
 
 func TestManagerCompletesFifteenQuestionsAndReplaysAuthoritativeEvents(t *testing.T) {

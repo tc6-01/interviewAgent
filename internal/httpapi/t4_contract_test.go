@@ -108,6 +108,17 @@ func TestDirectionConfirmationFeedsInterviewAndReviewPlanRetryContract(t *testin
 	}
 	_ = directionResponse.Body.Close()
 
+	invalidMatch := direction.ResumeMatch
+	invalidMatch.SkillMatch = append([]session.SkillMatch(nil), direction.ResumeMatch.SkillMatch...)
+	invalidMatch.SkillMatch[0].Evidence = "invented Kubernetes platform ownership"
+	invalidPatch := patchJSON(t, client, server.URL+"/api/v1/interview-directions/"+direction.ID, subject, map[string]any{
+		"expected_version": direction.Version,
+		"position":         direction.Position, "experience_level": direction.ExperienceLevel,
+		"focus_areas": direction.FocusAreas, "matched_skills": direction.MatchedSkills, "gaps": direction.Gaps,
+		"jd_analysis": direction.JDAnalysis, "resume_match_result": invalidMatch,
+	})
+	assertAPIError(t, invalidPatch, http.StatusBadRequest, "invalid_request")
+
 	patchedResponse := patchJSON(t, client, server.URL+"/api/v1/interview-directions/"+direction.ID, subject, map[string]any{
 		"expected_version": direction.Version,
 		"position":         "Senior Go Backend Engineer", "experience_level": "senior",
