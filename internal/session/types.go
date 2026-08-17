@@ -35,6 +35,40 @@ type CreateInput struct {
 	JDText        string
 	ResumeText    string
 	QuestionCount int
+	DirectionID   string
+	Direction     *Direction
+}
+
+type DirectionStatus string
+
+const (
+	DirectionDraft     DirectionStatus = "draft"
+	DirectionConfirmed DirectionStatus = "confirmed"
+)
+
+type Direction struct {
+	ID              string          `json:"direction_id"`
+	SubjectID       string          `json:"-"`
+	Version         int             `json:"version"`
+	Status          DirectionStatus `json:"status"`
+	Position        string          `json:"position"`
+	ExperienceLevel string          `json:"experience_level"`
+	FocusAreas      []string        `json:"focus_areas"`
+	MatchedSkills   []string        `json:"matched_skills"`
+	Gaps            []string        `json:"gaps"`
+	SourceSHA256    string          `json:"-"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	ConfirmedAt     *time.Time      `json:"confirmed_at"`
+}
+
+type DirectionPatch struct {
+	ExpectedVersion int      `json:"expected_version"`
+	Position        string   `json:"position"`
+	ExperienceLevel string   `json:"experience_level"`
+	FocusAreas      []string `json:"focus_areas"`
+	MatchedSkills   []string `json:"matched_skills"`
+	Gaps            []string `json:"gaps"`
 }
 
 type Question struct {
@@ -52,14 +86,17 @@ type AwaitingAnswer struct {
 }
 
 type QARecord struct {
-	PromptID   string    `json:"prompt_id"`
-	Number     int       `json:"question_no"`
-	Kind       string    `json:"kind"`
-	Question   string    `json:"question"`
-	Answer     string    `json:"answer"`
-	Score      float64   `json:"score"`
-	Feedback   string    `json:"feedback"`
-	AnsweredAt time.Time `json:"answered_at"`
+	PromptID        string    `json:"prompt_id"`
+	Number          int       `json:"question_no"`
+	Kind            string    `json:"kind"`
+	Question        string    `json:"question"`
+	Answer          string    `json:"answer"`
+	Score           float64   `json:"score"`
+	Feedback        string    `json:"feedback"`
+	KeyPointsHit    []string  `json:"key_points_hit,omitempty"`
+	KeyPointsMissed []string  `json:"key_points_missed,omitempty"`
+	ScoreDegraded   bool      `json:"score_degraded,omitempty"`
+	AnsweredAt      time.Time `json:"answered_at"`
 }
 
 type Progress struct {
@@ -75,6 +112,9 @@ type Snapshot struct {
 	AwaitingAnswer   *AwaitingAnswer `json:"awaiting_answer"`
 	CurrentQuestion  *Question       `json:"current_question"`
 	Progress         Progress        `json:"progress"`
+	Direction        *Direction      `json:"direction,omitempty"`
+	JDAnalysis       *JDAnalysis     `json:"jd_analysis,omitempty"`
+	MatchResult      *MatchResult    `json:"match_result,omitempty"`
 	QAHistory        []QARecord      `json:"qa_history"`
 	EndedReason      *string         `json:"ended_reason"`
 	ReportStatus     ArtifactStatus  `json:"report_status"`
@@ -98,8 +138,23 @@ type Event struct {
 func (e Event) Authoritative() bool { return e.ID > 0 }
 
 type Score struct {
-	Value    float64 `json:"score"`
-	Feedback string  `json:"feedback"`
+	Value           float64  `json:"score"`
+	Feedback        string   `json:"feedback"`
+	KeyPointsHit    []string `json:"key_points_hit,omitempty"`
+	KeyPointsMissed []string `json:"key_points_missed,omitempty"`
+	FollowUpNeeded  bool     `json:"follow_up_needed,omitempty"`
+}
+
+type JDAnalysis struct {
+	Position        string   `json:"position"`
+	ExperienceLevel string   `json:"experience_level"`
+	FocusAreas      []string `json:"focus_areas"`
+}
+
+type MatchResult struct {
+	OverallScore  float64  `json:"overall_score"`
+	MatchedSkills []string `json:"matched_skills"`
+	Gaps          []string `json:"gaps"`
 }
 
 type Artifact struct {

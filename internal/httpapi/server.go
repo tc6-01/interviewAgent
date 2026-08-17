@@ -28,11 +28,17 @@ type ReadinessReporter interface {
 }
 
 type InterviewService interface {
+	GenerateDirection(context.Context, string, string, string) (session.Direction, error)
+	UpdateDirection(context.Context, string, string, session.DirectionPatch) (session.Direction, error)
+	ConfirmDirection(context.Context, string, string, int) (session.Direction, error)
 	Create(context.Context, session.CreateInput) (session.Snapshot, error)
 	Snapshot(context.Context, string, string) (session.Snapshot, error)
 	Answer(context.Context, string, string, session.AnswerRequest) error
 	Quit(context.Context, string, string, string) error
 	Subscribe(context.Context, string, string, int64) ([]session.Event, <-chan session.Event, func(), error)
+	Report(context.Context, string, string) (session.Artifact, error)
+	ReviewPlan(context.Context, string, string) (session.Artifact, error)
+	RetryReviewPlan(context.Context, string, string) error
 }
 
 type Server struct {
@@ -47,11 +53,18 @@ func New(config ConfigValidator, sessions ReadinessReporter, logger *slog.Logger
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", readyz(config, sessions, logger))
 	if interviews, ok := sessions.(InterviewService); ok {
+		mux.HandleFunc("POST /api/v1/documents/parse", parseDocument)
+		mux.HandleFunc("POST /api/v1/interview-directions", createDirection(interviews))
+		mux.HandleFunc("PATCH /api/v1/interview-directions/{id}", updateDirection(interviews))
+		mux.HandleFunc("POST /api/v1/interview-directions/{id}/confirm", confirmDirection(interviews))
 		mux.HandleFunc("POST /api/v1/interviews", createInterview(interviews))
 		mux.HandleFunc("GET /api/v1/interviews/{id}", getInterview(interviews))
 		mux.HandleFunc("GET /api/v1/interviews/{id}/events", interviewEvents(interviews, logger))
 		mux.HandleFunc("POST /api/v1/interviews/{id}/answers", answerInterview(interviews))
 		mux.HandleFunc("POST /api/v1/interviews/{id}/quit", quitInterview(interviews))
+		mux.HandleFunc("GET /api/v1/interviews/{id}/report", getReport(interviews))
+		mux.HandleFunc("GET /api/v1/interviews/{id}/review-plan", getReviewPlan(interviews))
+		mux.HandleFunc("POST /api/v1/interviews/{id}/review-plan/retry", retryReviewPlan(interviews))
 	}
 	return &Server{handler: mux}
 }
@@ -112,9 +125,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 type createInterviewRequest struct {
-	JDText     string `json:"jd_text"`
-	ResumeText string `json:"resume_text"`
-	Options    struct {
+	JDText      string `json:"jd_text"`
+	ResumeText  string `json:"resume_text"`
+	DirectionID string `json:"direction_id"`
+	Options     struct {
 		QuestionCount int `json:"question_count"`
 	} `json:"options"`
 }
@@ -139,8 +153,12 @@ func createInterview(service InterviewService) http.HandlerFunc {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "interview_input_too_large", "JD 和简历文本均不能超过 50000 个字符", nil)
 			return
 		}
+		if request.DirectionID == "" && (strings.TrimSpace(request.JDText) == "" || strings.TrimSpace(request.ResumeText) == "") {
+			writeAPIError(w, http.StatusBadRequest, "interview_input_required", "jd_text 和 resume_text 不能为空", nil)
+			return
+		}
 		snapshot, err := service.Create(r.Context(), session.CreateInput{
-			SubjectID: subjectID, JDText: request.JDText, ResumeText: request.ResumeText, QuestionCount: count,
+			SubjectID: subjectID, JDText: request.JDText, ResumeText: request.ResumeText, QuestionCount: count, DirectionID: request.DirectionID,
 		})
 		if err != nil {
 			writeServiceError(w, err)
@@ -152,6 +170,184 @@ func createInterview(service InterviewService) http.HandlerFunc {
 			"events_url":   "/api/v1/interviews/" + snapshot.InterviewID + "/events",
 			"created_at":   snapshot.CreatedAt,
 		})
+	}
+}
+
+func parseDocument(w http.ResponseWriter, r *http.Request) {
+	type responseSource struct {
+		Type string `json:"type"`
+		Name string `json:"name,omitempty"`
+		URL  string `json:"url,omitempty"`
+	}
+	var kind, text string
+	source := responseSource{Type: "text"}
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+		if err := r.ParseMultipartForm(2 << 20); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_document", "无法解析上传文件", nil)
+			return
+		}
+		kind = strings.TrimSpace(r.FormValue("kind"))
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "document_file_required", "file 不能为空", nil)
+			return
+		}
+		defer file.Close()
+		body, err := io.ReadAll(io.LimitReader(file, 2<<20))
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_document", "无法读取上传文件", nil)
+			return
+		}
+		text = string(body)
+		source = responseSource{Type: "file", Name: header.Filename}
+	} else {
+		var request struct {
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+			URL  string `json:"url"`
+		}
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+			return
+		}
+		kind, text = strings.TrimSpace(request.Kind), request.Text
+		if strings.TrimSpace(request.URL) != "" {
+			writeAPIError(w, http.StatusUnprocessableEntity, "document_url_unsupported", "当前版本不抓取远程 URL，请粘贴文本或上传文件", nil)
+			return
+		}
+	}
+	if kind != "jd" && kind != "resume" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_document_kind", "kind 必须是 jd 或 resume", nil)
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		writeAPIError(w, http.StatusBadRequest, "document_text_required", "文档内容不能为空", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"kind": kind, "text": text, "chars": utf8.RuneCountInString(text), "source": source, "warnings": []string{}})
+}
+
+func createDirection(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		var request struct {
+			JDText     string `json:"jd_text"`
+			ResumeText string `json:"resume_text"`
+		}
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+			return
+		}
+		direction, err := service.GenerateDirection(r.Context(), subjectID, request.JDText, request.ResumeText)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, direction)
+	}
+}
+
+func updateDirection(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		var patch session.DirectionPatch
+		if err := decodeJSON(w, r, &patch); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+			return
+		}
+		direction, err := service.UpdateDirection(r.Context(), subjectID, r.PathValue("id"), patch)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, direction)
+	}
+}
+
+func confirmDirection(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		var request struct {
+			ExpectedVersion int `json:"expected_version"`
+		}
+		if err := decodeJSON(w, r, &request); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+			return
+		}
+		direction, err := service.ConfirmDirection(r.Context(), subjectID, r.PathValue("id"), request.ExpectedVersion)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, direction)
+	}
+}
+
+func getReport(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		artifact, err := service.Report(r.Context(), subjectID, r.PathValue("id"))
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"report_markdown": artifact.Markdown, "report": json.RawMessage(artifact.Value)})
+	}
+}
+
+func getReviewPlan(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		artifact, err := service.ReviewPlan(r.Context(), subjectID, r.PathValue("id"))
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"plan_markdown": artifact.Markdown, "plan": json.RawMessage(artifact.Value)})
+	}
+}
+
+func retryReviewPlan(service InterviewService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		subjectID, err := resolveSubject(w, r)
+		if err != nil {
+			writeAPIError(w, http.StatusUnauthorized, "unauthenticated", "无法解析当前主体", nil)
+			return
+		}
+		if r.Body != nil && r.ContentLength != 0 {
+			var request struct{}
+			if err := decodeJSON(w, r, &request); err != nil {
+				writeAPIError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
+				return
+			}
+		}
+		if err := service.RetryReviewPlan(r.Context(), subjectID, r.PathValue("id")); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "interview_id": r.PathValue("id"), "artifact": "review_plan"})
 	}
 }
 

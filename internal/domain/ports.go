@@ -17,6 +17,40 @@ type CheckResult struct {
 type LLMGateway interface {
 	Configured(context.Context) error
 	Model() string
+	Complete(context.Context, LLMRequest) (LLMResponse, error)
+	Metrics() LLMMetrics
+}
+
+type LLMRequest struct {
+	Operation    string
+	SystemPrompt string
+	UserPrompt   string
+	JSON         bool
+}
+
+type TokenUsage struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
+type LLMResponse struct {
+	Content string
+	Usage   TokenUsage
+	Retries int
+}
+
+type LLMMetrics struct {
+	Requests       int64 `json:"requests"`
+	Retries        int64 `json:"retries"`
+	Failures       int64 `json:"failures"`
+	PromptTokens   int64 `json:"prompt_tokens"`
+	OutputTokens   int64 `json:"output_tokens"`
+	InFlight       int64 `json:"in_flight"`
+	MaxInFlight    int64 `json:"max_in_flight"`
+	Timeouts       int64 `json:"timeouts"`
+	RateLimited    int64 `json:"rate_limited"`
+	ProviderErrors int64 `json:"provider_errors"`
 }
 
 type QuestionType string

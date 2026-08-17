@@ -18,12 +18,63 @@ type fakeGraph struct{}
 func (fakeGraph) Checks(context.Context) []domain.CheckResult { return nil }
 
 type memoryRepository struct {
-	mu       sync.Mutex
-	sessions map[string]Snapshot
+	mu         sync.Mutex
+	sessions   map[string]Snapshot
+	directions map[string]Direction
 }
 
 func newMemoryRepository() *memoryRepository {
-	return &memoryRepository{sessions: make(map[string]Snapshot)}
+	return &memoryRepository{sessions: make(map[string]Snapshot), directions: make(map[string]Direction)}
+}
+
+func (r *memoryRepository) CreateDirection(_ context.Context, direction Direction) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.directions[direction.ID] = direction
+	return nil
+}
+
+func (r *memoryRepository) GetDirection(_ context.Context, subjectID, directionID string) (Direction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	direction, ok := r.directions[directionID]
+	if !ok || direction.SubjectID != subjectID {
+		return Direction{}, NotFoundError{}
+	}
+	return direction, nil
+}
+
+func (r *memoryRepository) UpdateDirection(_ context.Context, subjectID, directionID string, patch DirectionPatch) (Direction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	direction, ok := r.directions[directionID]
+	if !ok || direction.SubjectID != subjectID {
+		return Direction{}, NotFoundError{}
+	}
+	if direction.Version != patch.ExpectedVersion || direction.Status != DirectionDraft {
+		return Direction{}, &ConflictError{Code: "direction_version_conflict", Message: "conflict"}
+	}
+	direction.Version++
+	direction.Position, direction.ExperienceLevel = patch.Position, patch.ExperienceLevel
+	direction.FocusAreas, direction.MatchedSkills, direction.Gaps = patch.FocusAreas, patch.MatchedSkills, patch.Gaps
+	r.directions[directionID] = direction
+	return direction, nil
+}
+
+func (r *memoryRepository) ConfirmDirection(_ context.Context, subjectID, directionID string, expectedVersion int) (Direction, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	direction, ok := r.directions[directionID]
+	if !ok || direction.SubjectID != subjectID {
+		return Direction{}, NotFoundError{}
+	}
+	if direction.Version != expectedVersion || direction.Status != DirectionDraft {
+		return Direction{}, &ConflictError{Code: "direction_confirm_conflict", Message: "conflict"}
+	}
+	now := time.Now().UTC()
+	direction.Status, direction.ConfirmedAt = DirectionConfirmed, &now
+	r.directions[directionID] = direction
+	return direction, nil
 }
 
 func (r *memoryRepository) CreateSession(_ context.Context, snapshot Snapshot) error {
