@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -50,7 +51,9 @@ func TestAnonymousModeIssuesHardenedSubjectCookieAndIgnoresSpoofedHeader(t *test
 }
 
 func TestJWTModeRequiresBearerAndNeverFallsBackToCookie(t *testing.T) {
-	server, _ := newInterviewTestServerWithSecurity(t, time.Minute, SecurityConfig{Mode: "jwt", JWTSecret: testJWTSecret})
+	server, _ := newInterviewTestServerWithSecurity(t, time.Minute, SecurityConfig{
+		Mode: "jwt", JWTSecret: testJWTSecret, SubjectIDPepper: testSubjectIDPepper,
+	})
 	client := server.Client()
 
 	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/documents/parse", bytes.NewBufferString(`{"kind":"jd","text":"Go backend"}`))
@@ -78,7 +81,7 @@ func TestJWTModeRequiresBearerAndNeverFallsBackToCookie(t *testing.T) {
 func TestCrossOriginMatrixAllowsOnlyWhitelistedJWT(t *testing.T) {
 	const allowedOrigin = "https://app.example.test"
 	jwtServer, _ := newInterviewTestServerWithSecurity(t, time.Minute, SecurityConfig{
-		Mode: "jwt", JWTSecret: testJWTSecret, AllowedOrigins: []string{allowedOrigin},
+		Mode: "jwt", JWTSecret: testJWTSecret, SubjectIDPepper: testSubjectIDPepper, AllowedOrigins: []string{allowedOrigin},
 	})
 	client := jwtServer.Client()
 
@@ -126,6 +129,64 @@ func TestCrossOriginMatrixAllowsOnlyWhitelistedJWT(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertAPIError(t, anonymousResponse, http.StatusForbidden, "cross_origin_anonymous_forbidden")
+}
+
+func TestJWTSubjectRemainsStableAcrossSigningSecretRotation(t *testing.T) {
+	const rotatedSecret = "rotated-test-secret-with-at-least-thirty-two-characters"
+	for name, pepper := range map[string]string{
+		"independent pepper": testSubjectIDPepper,
+		"legacy upgrade":     testJWTSecret,
+	} {
+		t.Run(name, func(t *testing.T) {
+			oldSubject, err := jwtSubject(
+				"Bearer "+signedTestTokenWithSecret(t, "subject-a", testJWTSecret),
+				testJWTSecret,
+				pepper,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rotatedSubject, err := jwtSubject(
+				"Bearer "+signedTestTokenWithSecret(t, "subject-a", rotatedSecret),
+				rotatedSecret,
+				pepper,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if oldSubject != rotatedSubject {
+				t.Fatalf("storage subject changed across JWT secret rotation: old=%q rotated=%q", oldSubject, rotatedSubject)
+			}
+		})
+	}
+}
+
+func TestUnknownAPIRouteDoesNotFallThroughToSPA(t *testing.T) {
+	web := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("spa-index"))
+	})
+	server := httptest.NewServer(New(fakeConfig{}, nil, discardLogger(),
+		WithSecurity(SecurityConfig{Mode: "anonymous"}), WithWeb(web)).Handler())
+	t.Cleanup(server.Close)
+
+	response, err := server.Client().Get(server.URL + "/api/v1/not-a-real-route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType := response.Header.Get("Content-Type"); contentType != "application/json; charset=utf-8" {
+		t.Fatalf("Content-Type=%q, want JSON", contentType)
+	}
+	assertAPIError(t, response, http.StatusNotFound, "api_not_found")
+
+	webResponse, err := server.Client().Get(server.URL + "/candidate/interview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer webResponse.Body.Close()
+	if webResponse.StatusCode != http.StatusOK || readBody(webResponse) != "spa-index" {
+		t.Fatalf("SPA response status=%d", webResponse.StatusCode)
+	}
 }
 
 func TestJWTSubjectCannotUseSpoofedHeaderToCrossBoundary(t *testing.T) {

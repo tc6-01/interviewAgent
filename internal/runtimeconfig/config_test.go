@@ -17,6 +17,7 @@ func TestLoadRequiresOnlyLLMAPIKey(t *testing.T) {
 	t.Setenv("SHUTDOWN_TIMEOUT", "")
 	t.Setenv("AUTH_MODE", "")
 	t.Setenv("JWT_SECRET", "")
+	t.Setenv("SUBJECT_ID_PEPPER", "")
 	t.Setenv("CORS_ALLOWED_ORIGINS", "")
 	t.Setenv("COOKIE_SECURE", "")
 
@@ -33,7 +34,7 @@ func TestLoadRequiresOnlyLLMAPIKey(t *testing.T) {
 	if cfg.LLMTimeout != defaultLLMTimeout || cfg.ShutdownTimeout != defaultShutdown {
 		t.Fatalf("unexpected duration defaults: %+v", cfg)
 	}
-	if cfg.AuthMode != "anonymous" || cfg.JWTSecret != "" || len(cfg.CORSOrigins) != 0 {
+	if cfg.AuthMode != "anonymous" || cfg.JWTSecret != "" || cfg.SubjectIDPepper != "" || len(cfg.CORSOrigins) != 0 {
 		t.Fatalf("unexpected anonymous security defaults: %+v", cfg)
 	}
 }
@@ -47,6 +48,7 @@ func TestValidateAuthenticationAndCORSModes(t *testing.T) {
 	jwt := base
 	jwt.AuthMode = "jwt"
 	jwt.JWTSecret = "a-secret-longer-than-thirty-two-characters"
+	jwt.SubjectIDPepper = "a-stable-pepper-longer-than-thirty-two-characters"
 	jwt.CORSOrigins = []string{"https://app.example.com"}
 	if err := jwt.Validate(); err != nil {
 		t.Fatalf("valid jwt config: %v", err)
@@ -56,6 +58,12 @@ func TestValidateAuthenticationAndCORSModes(t *testing.T) {
 	shortSecret.JWTSecret = "fixed-secret"
 	if err := shortSecret.Validate(); err == nil || !strings.Contains(err.Error(), "JWT_SECRET") {
 		t.Fatalf("short secret error=%v", err)
+	}
+
+	missingPepper := jwt
+	missingPepper.SubjectIDPepper = ""
+	if err := missingPepper.Validate(); err == nil || !strings.Contains(err.Error(), "SUBJECT_ID_PEPPER") {
+		t.Fatalf("missing subject pepper error=%v", err)
 	}
 
 	anonymousCORS := base

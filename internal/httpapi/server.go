@@ -70,28 +70,41 @@ func New(config ConfigValidator, sessions ReadinessReporter, logger *slog.Logger
 	for _, option := range opts {
 		option(&options)
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
-	mux.HandleFunc("GET /readyz", readyz(config, sessions, logger))
+	apiMux := http.NewServeMux()
+	siteMux := http.NewServeMux()
+	siteMux.HandleFunc("GET /healthz", healthz)
+	siteMux.HandleFunc("GET /readyz", readyz(config, sessions, logger))
 	if interviews, ok := sessions.(InterviewService); ok {
-		mux.HandleFunc("POST /api/v1/documents/parse", parseDocument)
-		mux.HandleFunc("POST /api/v1/interview-directions", createDirection(interviews))
-		mux.HandleFunc("PATCH /api/v1/interview-directions/{id}", updateDirection(interviews))
-		mux.HandleFunc("POST /api/v1/interview-directions/{id}/confirm", confirmDirection(interviews))
-		mux.HandleFunc("POST /api/v1/interviews", createInterview(interviews))
-		mux.HandleFunc("GET /api/v1/interviews/{id}", getInterview(interviews))
-		mux.HandleFunc("GET /api/v1/interviews/{id}/events", interviewEvents(interviews, logger))
-		mux.HandleFunc("POST /api/v1/interviews/{id}/answers", answerInterview(interviews))
-		mux.HandleFunc("POST /api/v1/interviews/{id}/quit", quitInterview(interviews))
-		mux.HandleFunc("GET /api/v1/interviews/{id}/report", getReport(interviews))
-		mux.HandleFunc("POST /api/v1/interviews/{id}/report/retry", retryReport(interviews))
-		mux.HandleFunc("GET /api/v1/interviews/{id}/review-plan", getReviewPlan(interviews))
-		mux.HandleFunc("POST /api/v1/interviews/{id}/review-plan/retry", retryReviewPlan(interviews))
+		apiMux.HandleFunc("POST /api/v1/documents/parse", parseDocument)
+		apiMux.HandleFunc("POST /api/v1/interview-directions", createDirection(interviews))
+		apiMux.HandleFunc("PATCH /api/v1/interview-directions/{id}", updateDirection(interviews))
+		apiMux.HandleFunc("POST /api/v1/interview-directions/{id}/confirm", confirmDirection(interviews))
+		apiMux.HandleFunc("POST /api/v1/interviews", createInterview(interviews))
+		apiMux.HandleFunc("GET /api/v1/interviews/{id}", getInterview(interviews))
+		apiMux.HandleFunc("GET /api/v1/interviews/{id}/events", interviewEvents(interviews, logger))
+		apiMux.HandleFunc("POST /api/v1/interviews/{id}/answers", answerInterview(interviews))
+		apiMux.HandleFunc("POST /api/v1/interviews/{id}/quit", quitInterview(interviews))
+		apiMux.HandleFunc("GET /api/v1/interviews/{id}/report", getReport(interviews))
+		apiMux.HandleFunc("POST /api/v1/interviews/{id}/report/retry", retryReport(interviews))
+		apiMux.HandleFunc("GET /api/v1/interviews/{id}/review-plan", getReviewPlan(interviews))
+		apiMux.HandleFunc("POST /api/v1/interviews/{id}/review-plan/retry", retryReviewPlan(interviews))
 	}
+	apiMux.HandleFunc("/", apiNotFound)
 	if options.web != nil {
-		mux.Handle("GET /", options.web)
+		siteMux.Handle("GET /", options.web)
 	}
-	return &Server{handler: secureHandler(options.security, mux)}
+	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) {
+			apiMux.ServeHTTP(w, r)
+			return
+		}
+		siteMux.ServeHTTP(w, r)
+	})
+	return &Server{handler: secureHandler(options.security, router)}
+}
+
+func apiNotFound(w http.ResponseWriter, _ *http.Request) {
+	writeAPIError(w, http.StatusNotFound, "api_not_found", "API 路径不存在", nil)
 }
 
 func (s *Server) Handler() http.Handler {

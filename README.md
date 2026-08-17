@@ -69,6 +69,7 @@ internal/adapters/{sqlite,bm25,llm/openai}
 | `SQLITE_PATH` | 否 | `data/interview.db` | SQLite 文件；测试可用 `:memory:` |
 | `AUTH_MODE` | 否 | `anonymous` | `anonymous` 使用同源主体 Cookie；`jwt` 仅接受 Bearer |
 | `JWT_SECRET` | JWT 模式是 | 无 | JWT HMAC 密钥，至少 32 字符；无固定默认值 |
+| `SUBJECT_ID_PEPPER` | JWT 模式是 | 无 | 稳定主体派生密钥，至少 32 字符；不得随 JWT 密钥轮换 |
 | `CORS_ALLOWED_ORIGINS` | 否 | 空 | 仅 JWT 模式可用的显式逗号分隔白名单，不支持 `*` |
 | `COOKIE_SECURE` | 否 | `false` | HTTPS 匿名部署设为 `true` |
 | `LLM_TIMEOUT` | 否 | `60s` | 单次模型请求超时 |
@@ -125,6 +126,7 @@ scripts/                       API smoke 与安全扫描门禁
 
 - 默认匿名部署必须同源：Cookie 为 HttpOnly、SameSite=Lax，服务端忽略客户端自填的 `X-Subject-ID`。
 - JWT 模式的 REST 与 SSE 都使用 `Authorization: Bearer <token>`；跨源仅在来源命中 `CORS_ALLOWED_ORIGINS` 时开放，且不发送 Cookie。
+- JWT 验签使用 `JWT_SECRET`，稳定 storage subject 使用独立的 `SUBJECT_ID_PEPPER`。轮换 `JWT_SECRET` 时保持 pepper 不变；从旧版本升级时，先将 `SUBJECT_ID_PEPPER` 设为升级前的 `JWT_SECRET`，验证同一 `sub` 仍可访问历史数据后再轮换 JWT 密钥。轮换 pepper 必须配套主体 ID 数据迁移，不能直接修改配置。
 - 生产 Web 由 `go:embed` 单二进制同源提供；Vite 仅用于开发代理。GitHub Pages 只能发布 `VITE_API_MODE=mock` 的静态演示，不能作为正式匿名部署。
 
 ## MVP API 闭环

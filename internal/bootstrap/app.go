@@ -71,7 +71,8 @@ func New(ctx context.Context, cfg runtimeconfig.Config, logger *slog.Logger) (*A
 	}
 	server := httpapi.New(cfg, sessions, logger,
 		httpapi.WithSecurity(httpapi.SecurityConfig{
-			Mode: cfg.AuthMode, JWTSecret: cfg.JWTSecret, AllowedOrigins: cfg.CORSOrigins, CookieSecure: cfg.CookieSecure,
+			Mode: cfg.AuthMode, JWTSecret: cfg.JWTSecret, SubjectIDPepper: cfg.SubjectIDPepper,
+			AllowedOrigins: cfg.CORSOrigins, CookieSecure: cfg.CookieSecure,
 		}),
 		httpapi.WithWeb(webui.Handler()),
 	)

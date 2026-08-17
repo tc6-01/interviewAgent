@@ -18,10 +18,11 @@ import (
 const subjectCookieName = "interview_subject"
 
 type SecurityConfig struct {
-	Mode           string
-	JWTSecret      string
-	AllowedOrigins []string
-	CookieSecure   bool
+	Mode            string
+	JWTSecret       string
+	SubjectIDPepper string
+	AllowedOrigins  []string
+	CookieSecure    bool
 }
 
 type subjectContextKey struct{}
@@ -41,7 +42,7 @@ func secureHandler(config SecurityConfig, next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'")
 
-		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+		if !isAPIPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -77,6 +78,10 @@ func secureHandler(config SecurityConfig, next http.Handler) http.Handler {
 	})
 }
 
+func isAPIPath(path string) bool {
+	return path == "/api" || strings.HasPrefix(path, "/api/")
+}
+
 func authenticateSubject(config SecurityConfig, w http.ResponseWriter, r *http.Request) (string, error) {
 	switch config.Mode {
 	case "anonymous":
@@ -93,7 +98,7 @@ func authenticateSubject(config SecurityConfig, w http.ResponseWriter, r *http.R
 		})
 		return subjectID, nil
 	case "jwt":
-		return jwtSubject(r.Header.Get("Authorization"), config.JWTSecret)
+		return jwtSubject(r.Header.Get("Authorization"), config.JWTSecret, config.SubjectIDPepper)
 	default:
 		return "", errors.New("unsupported authentication mode")
 	}
@@ -107,19 +112,19 @@ func validAnonymousSubject(value string) bool {
 	return err == nil
 }
 
-func jwtSubject(authorization, secret string) (string, error) {
+func jwtSubject(authorization, signingSecret, subjectIDPepper string) (string, error) {
 	parts := strings.Fields(authorization)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(secret) < 32 {
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(signingSecret) < 32 || len(subjectIDPepper) < 32 {
 		return "", errors.New("invalid bearer authentication")
 	}
 	claims := jwt.RegisteredClaims{}
 	token, err := jwt.ParseWithClaims(parts[1], &claims, func(token *jwt.Token) (any, error) {
-		return []byte(secret), nil
+		return []byte(signingSecret), nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
 	if err != nil || !token.Valid || strings.TrimSpace(claims.Subject) == "" {
 		return "", errors.New("invalid bearer token")
 	}
-	mac := hmac.New(sha256.New, []byte(secret))
+	mac := hmac.New(sha256.New, []byte(subjectIDPepper))
 	_, _ = mac.Write([]byte(claims.Subject))
 	return "jwt_" + hex.EncodeToString(mac.Sum(nil)), nil
 }

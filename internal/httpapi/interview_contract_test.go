@@ -111,7 +111,7 @@ func TestInterviewHTTPAndSSEContract(t *testing.T) {
 	if final.Progress.Answered != 15 || !final.ReportReady || !final.ReviewPlanReady {
 		t.Fatalf("final snapshot = %#v", final)
 	}
-	storedSubject, err := jwtSubject("Bearer "+signedTestToken(t, "subject-a"), testJWTSecret)
+	storedSubject, err := jwtSubject("Bearer "+signedTestToken(t, "subject-a"), testJWTSecret, testSubjectIDPepper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,9 @@ func createInterviewHTTP(t *testing.T, client *http.Client, baseURL, subject str
 }
 
 func newInterviewTestServer(t *testing.T, idleTimeout time.Duration) (*httptest.Server, *session.Manager) {
-	return newInterviewTestServerWithSecurity(t, idleTimeout, SecurityConfig{Mode: "jwt", JWTSecret: testJWTSecret})
+	return newInterviewTestServerWithSecurity(t, idleTimeout, SecurityConfig{
+		Mode: "jwt", JWTSecret: testJWTSecret, SubjectIDPepper: testSubjectIDPepper,
+	})
 }
 
 func newInterviewTestServerWithSecurity(t *testing.T, idleTimeout time.Duration, security SecurityConfig) (*httptest.Server, *session.Manager) {
@@ -223,6 +225,7 @@ func getWithSubject(t *testing.T, client *http.Client, url, subject string) *htt
 }
 
 const testJWTSecret = "test-only-secret-with-at-least-thirty-two-characters"
+const testSubjectIDPepper = "test-only-stable-subject-pepper-at-least-thirty-two-characters"
 
 func setBearer(t *testing.T, request *http.Request, subject string) {
 	t.Helper()
@@ -230,11 +233,15 @@ func setBearer(t *testing.T, request *http.Request, subject string) {
 }
 
 func signedTestToken(t *testing.T, subject string) string {
+	return signedTestTokenWithSecret(t, subject, testJWTSecret)
+}
+
+func signedTestTokenWithSecret(t *testing.T, subject, secret string) string {
 	t.Helper()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
 		Subject: subject, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)), IssuedAt: jwt.NewNumericDate(time.Now()),
 	})
-	signed, err := token.SignedString([]byte(testJWTSecret))
+	signed, err := token.SignedString([]byte(secret))
 	if err != nil {
 		t.Fatal(err)
 	}

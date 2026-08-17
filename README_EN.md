@@ -66,6 +66,7 @@ The historical `cmd`, `internal/handler`, `internal/memory`, and `internal/rag` 
 | `SQLITE_PATH` | no | `data/interview.db` | SQLite file; tests may use `:memory:` |
 | `AUTH_MODE` | no | `anonymous` | `anonymous` uses a same-origin subject cookie; `jwt` accepts Bearer only |
 | `JWT_SECRET` | in JWT mode | none | HMAC secret with at least 32 characters; there is no fixed default |
+| `SUBJECT_ID_PEPPER` | in JWT mode | none | stable subject-derivation secret with at least 32 characters; do not rotate it with the JWT secret |
 | `CORS_ALLOWED_ORIGINS` | no | empty | explicit comma-separated allowlist for JWT mode only; `*` is rejected |
 | `COOKIE_SECURE` | no | `false` | set to `true` for HTTPS anonymous deployments |
 | `LLM_TIMEOUT` | no | `60s` | per-attempt model request timeout |
@@ -127,6 +128,7 @@ scripts/                       API smoke and security gates
 
 - Anonymous deployment is same-origin only. The cookie is HttpOnly and SameSite=Lax, and client-supplied `X-Subject-ID` values are ignored.
 - JWT mode uses `Authorization: Bearer <token>` for both REST and SSE. Cross-origin requests are accepted only from `CORS_ALLOWED_ORIGINS` and never rely on cookies.
+- JWT verification uses `JWT_SECRET`, while the stable storage subject is derived with an independent `SUBJECT_ID_PEPPER`. Keep the pepper unchanged when rotating `JWT_SECRET`. When upgrading from an earlier version, first set `SUBJECT_ID_PEPPER` to the pre-upgrade `JWT_SECRET`, verify that the same `sub` can still access existing data, and only then rotate the JWT secret. Changing the pepper requires a subject-ID data migration; do not edit it in place.
 - Production Web assets are served from the Go binary through `go:embed`; Vite is a development proxy. GitHub Pages is a static `VITE_API_MODE=mock` preview only, never a formal anonymous deployment.
 
 ## MVP API loop

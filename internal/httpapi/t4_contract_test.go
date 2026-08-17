@@ -199,7 +199,9 @@ func newT4ContractServer(t *testing.T, engine session.Engine) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(New(fakeConfig{}, manager, discardLogger(), WithSecurity(SecurityConfig{Mode: "jwt", JWTSecret: testJWTSecret})).Handler())
+	server := httptest.NewServer(New(fakeConfig{}, manager, discardLogger(), WithSecurity(SecurityConfig{
+		Mode: "jwt", JWTSecret: testJWTSecret, SubjectIDPepper: testSubjectIDPepper,
+	})).Handler())
 	t.Cleanup(func() { server.Close(); _ = manager.Close(); index.Close(); _ = store.Close() })
 	return server
 }

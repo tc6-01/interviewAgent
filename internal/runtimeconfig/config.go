@@ -29,6 +29,7 @@ type Config struct {
 	SQLitePath      string
 	AuthMode        string
 	JWTSecret       string
+	SubjectIDPepper string
 	CORSOrigins     []string
 	CookieSecure    bool
 	LLMBaseURL      string
@@ -66,6 +67,7 @@ func Load() (Config, error) {
 		SQLitePath:      envOrDefault("SQLITE_PATH", defaultSQLitePath),
 		AuthMode:        envOrDefault("AUTH_MODE", "anonymous"),
 		JWTSecret:       strings.TrimSpace(os.Getenv("JWT_SECRET")),
+		SubjectIDPepper: strings.TrimSpace(os.Getenv("SUBJECT_ID_PEPPER")),
 		CORSOrigins:     splitCSV(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		CookieSecure:    cookieSecure,
 		LLMBaseURL:      envOrDefault("LLM_BASE_URL", defaultLLMBaseURL),
@@ -101,6 +103,9 @@ func (c Config) Validate() error {
 	case "jwt":
 		if len(c.JWTSecret) < 32 {
 			return fmt.Errorf("config: JWT_SECRET must contain at least 32 characters when AUTH_MODE=jwt")
+		}
+		if len(c.SubjectIDPepper) < 32 {
+			return fmt.Errorf("config: SUBJECT_ID_PEPPER must contain at least 32 characters when AUTH_MODE=jwt")
 		}
 	default:
 		return fmt.Errorf("config: AUTH_MODE must be anonymous or jwt")
